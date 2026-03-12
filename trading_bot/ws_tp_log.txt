@@ -1,0 +1,13 @@
+INFO:kiwoom_api:[KiwoomAPI] 토큰 발급 성공
+INFO:kiwoom_api:[KiwoomWS] WebSocket 로그인 성공
+INFO:kiwoom_api:[KiwoomWS] WebSocket 연결 및 인증 완료: wss://mockapi.kiwoom.com:10000/api/dostk/websocket
+Testing trnm=H0STCNT0
+RAW MSG: {'trnm': 'H0STCNT0', 'return_code': 105108, 'return_msg': '정의되어 있지 않는 TRNM입니다 정의된 Command Handler를 가져올 수 없습니다 (TRNM=H0STCNT0)'}
+Testing trnm=REAL
+RAW MSG: {'trnm': 'REAL', 'return_code': 105108, 'return_msg': '정의되어 있지 않는 TRNM입니다 정의된 Command Handler를 가져올 수 없습니다 (TRNM=REAL)'}
+Testing trnm=STK_REAL
+RAW MSG: {'trnm': 'STK_REAL', 'return_code': 105108, 'return_msg': '정의되어 있지 않는 TRNM입니다 정의된 Command Handler를 가져올 수 없습니다 (TRNM=STK_REAL)'}
+Testing trnm=stk_info
+RAW MSG: {'trnm': 'STK_INFO', 'return_code': 105108, 'return_msg': '정의되어 있지 않는 TRNM입니다 정의된 Command Handler를 가져올 수 없습니다 (TRNM=STK_INFO)'}
+Testing trnm=S3_
+RAW MSG: {'trnm': 'S3_', 'return_code': 105108, 'return_msg': '정의되어 있지 않는 TRNM입니다 정의된 Command Handler를 가져올 수 없습니다 (TRNM=S3_)'}

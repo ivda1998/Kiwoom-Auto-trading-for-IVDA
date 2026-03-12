@@ -1,0 +1,16 @@
+# 인증정보 (절대 포함 금지)
+.env
+
+# 런타임 데이터
+logs/
+data/
+backtest_data/
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+
+# 기타
+.git/
+*.db

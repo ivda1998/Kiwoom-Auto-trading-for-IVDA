@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  trading_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trading_bot:latest
+    container_name: trading_bot
+
+    # .env 파일에서 환경변수 주입
+    env_file:
+      - .env
+
+    # 로그·데이터 영구 보존 (컨테이너 삭제 후에도 유지)
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./backtest_data:/app/backtest_data
+
+    # 자동 재시작 (장 시간 중 크래시 대비)
+    restart: unless-stopped
+
+    # 로그 크기 제한
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"

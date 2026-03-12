@@ -1,0 +1,2 @@
+Item keys: dict_keys(['cur_prc', 'trde_qty', 'trde_prica', 'dt', 'open_pric', 'high_pric', 'low_pric', 'pred_pre', 'pred_pre_sig', 'trde_tern_rt'])
+Item: {'cur_prc': '193100', 'trde_qty': '29431501', 'trde_prica': '5753012', 'dt': '20260305', 'open_pric': '195000', 'high_pric': '199700', 'low_pric': '190100', 'pred_pre': '+20900', 'pred_pre_sig': '2', 'trde_tern_rt': '+0.50'}

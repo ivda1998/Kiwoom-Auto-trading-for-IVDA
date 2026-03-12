@@ -1,0 +1,2669 @@
+<?xml version="1.0" encoding="euc-kr" ?>
+<KOA_DevGuideList>
+    <!-- OpenAPI개발가이드 -->
+    <version value="1.57"/>
+    <Content name="키움 OpenAPI">
+        <subject name="기본설명" type="desc"> <![CDATA[
+        [개요]
+
+        OpenAPI(Application Programing Interface)는 
+        OpenAPI를 통해 국내주식상품과 코스피200 선물/옵션을 거래할 수 있습니다.
+        사용자가 직접 거래/분석프로그램을 개발 할 수 있는 서비스이며 COM형태로 제공합니다.
+        
+        주요기능은 시세데이터 (조회데이터와 실시간데이터), 주문기능, 
+        조건검색기능(조회데이터와 실시간데이터)을 제공하며 모두 로그인 이후 가능합니다.
+        
+        OpenAPI는 보안성과 안정성을 최우선하여 운영되며
+        데이터의 가공을 최소화하여 사용자에게 원천데이터를 제공하는 것을 원칙으로 합니다.
+        
+        OpenAPI에서 발생되는 주문은 영웅문4 HTS, 영웅문S MTS 등 타매체에서도 확인이 가능하며,
+        반대로 영웅문4, 영웅문S의 주문에대한 체결신호가 OpenAPI에서 수신됩니다.
+        
+        ※ 당사 OpenAPI는 64비트용으로 제공되지 않습니다.
+           Visual Studio 2022, 64비트 MS Office 군의 엑셀 등에서는 OpenAPI 컨트롤 사용이 불가 합니다.
+           또한 OpenAPI는 (함수나 이벤트 모두) 스레드를 지원하지 않으므로 OpenAPI함수나 이벤트를 스레드에서 호출하는것은 안정성을 보장할 수 없습니다.
+        
+        
+        [대체거래소 지원]
+
+        대체거래소 지원을 위한 장운영 시간, 조회, 현금주문, 신용주문, 조건검색 기능이 추가되었습니다.
+        조회, 주문, 조건검색 추가 상세내용은 개별 항목을 참고해주세요.
+
+
+        실시간 타입 "장시작시간"
+        대체거래소 장시간 변경으로 장운영구분(FID 215) 구분값 추가
+        
+        장운영구분 = "P" // NXT 프리마켓 시작 알림
+        장운영구분 = "Q" // NXT 프리마켓 종료 알림
+        장운영구분 = "R" // NXT 메인마켓 시작 알림
+        장운영구분 = "S" // NXT 메인마켓 종료 알림
+        장운영구분 = "T" // NXT 에프터마켓 단일가 시작 알림
+        장운영구분 = "U" // NXT 에프터마켓 시작 알림
+        장운영구분 = "V" // NXT 에프터마켓 종료 알림
+        
+        
+        ]]> </subject>
+        <subject name="기본동작" type="desc"> <![CDATA[
+        [기본동작]
+        OpenAPI 데이터 요청과 데이터 수신 이벤트는 모두 비동기 방식입니다.
+        (반드시 조회요청한 순서대로 수신되지는 않습니다.)
+        시세조회나 주문 등 함수호출을 통해 서버로 요청하면 서버의 처리 결과를 그에 맞는 이벤트 발생으로 전달합니다.
+        이벤트는 일반함수와 구별하기 위해 "On~" 으로 시작되는 이름을 갖습니다.
+        OnEventConnect (로그인처리완료), OnReceiveTRData (조회요청응답), OnReceiveRealData (실시간시세수신)
+
+		
+        [데이터요청과 수신]
+        예) 조회요청.
+        요청(조회함수 CommRqData 사용자가 호출)  --> 이벤트 발생(OnReceiveTRData) --> 데이터 획득(GetCommData 사용자가 호출)
+        예) 조건검색요청.
+        요청(조회함수 SendCondition 사용자가 호출)  --> 이벤트 발생(OnReceiveTrCondition)
+        예) 주문요청.
+        요청(주문함수 SendOrder 사용자가 호출)  --> 이벤트 발생(OnReceiveTRData) --> 이벤트 발생 (OnReceiveChejanData) --> 데이터 획득(GetChejanData 사용자가 호출)
+		
+        ※ 이벤트를 임의로 호출해서 사용하는 것은 불가 합니다.
+        
+		
+        [계좌번호]
+        OpenAPI에서는 10자리의 계좌번호가 사용됩니다.
+        영웅문4 등에서는 끝 2자리를 고객님께 노출하지 않고 8자릿수로 제공됩니다. 
+        OpenAPI에서는 계좌의 끝 2자리를 따로 관리하지 않고
+        사용자가 입력한 그대로의 계좌번호를 사용하도록 설계되어 있습니다.
+        따라서 데이터 조회 또는 주문시 계좌번호 10자리를 모두 입력해주셔야 합니다.
+
+
+        [화면번호]
+        서버에 데이터를 요청하거나, 주문을 발생시킬때 사용합니다.
+        화면번호는 서버의 결과를 수신할때 어떤 요청에 의한 수신인지를 구별하기 위한 키값의 개념입니다.
+        0000을 제외한 임의의 숫자(4자리)를 자유롭게 사용하시면 됩니다.
+		
+        ※ 화면번호 사용시 주의할 점 : 
+        같은 화면번호로 데이터 요청을 빠르게 반복하는 경우 데이터의 유효성을 보장할 수 없습니다.
+        최소한 2개이상의 화면번호를 번갈아가며 또는 매번 새로운 화면번호를 사용하시기 바랍니다.
+        사용자 프로그램에서 사용할 수 있는 화면번호 갯수가 200개로 한정되어 있습니다.
+        이 갯수를 넘는 경우 데이터의 유효성을 보장할 수 없습니다.
+        (구현하시는 프로그램 성격상  화면번호 갯수가 200개가 넘어야 하는 경우, 이전에 사용되었던 화면번호를 재사용 하는 방식으로 구현해야 합니다.)
+		
+        ]]> </subject>
+        
+        <!-- <subject name="시세제공범위" type="desc"> <![CDATA[주식정보, 주식차트 틱,분,시,일,주,월,년, 코스피지수 선물, 코스피지수 옵션]]> </subject> -->
+    </Content>
+    <Content name="로그인 버전처리">
+        <subject name="기본설명" type="desc" > <![CDATA[
+        [로그인]
+        키움OpenAPI는 로그인창을 통해 접속(로그인) 합니다.
+        보안정책 강화로 인해 사용자의 로그인계정을 암호화하기 위해 로그인창이 사용됩니다.
+        소스상으로 고객의 계좌 비밀번호를 평문으로 입력받지 않도록 설계되었습니다.
+        
+		
+        [로그인 사용법]
+        로그인은 CommConnect()함수를 호출합니다. 키움OpenAPI가 제공하는 로그인창이 실행됩니다.
+        ID/Pw 입력 후 로그인완료시 OnEventConnect 이벤트가 발생됩니다.
+        OnEventConnect 이벤트의 인자값으로 로그인 성공여부를 알수 있습니다.
+        이 값이 0이면 성공이고 나머지는 실패로 오류코드값을 수신합니다.
+		
+        CommConnect(사용자 호출) -> 로그인창 출력 -> OnEventConnect(이벤트 발생)
+		
+		
+        [수동 로그인]
+        로그인창에 로그인ID와 비밀번호를 직접 입력해서 로그인 하는것을 말합니다.
+        수동 로그인중에 버전처리(최신파일 업데이트)내용이 있는 경우 버전처리도 함께 진행됩니다.
+        
+		
+        [계좌비밀번호 설정]
+        OpenAPI는 로그인 후 한번 계좌비밀번호를 입력/등록 해야 합니다.
+        계좌비밀번호 설정은 계좌비밀번호 입력창을 통해서만 가능합니다.
+        이 입력창을 출력하는 방법은 2가지로 제공됩니다.
+        1. 메뉴이용 - 로그인후 윈도우의 작업표시줄상에 깜박이는 트레이아이콘의 
+	마우스우측 메뉴(모니터 오른쪽 하단)에서 "계좌비밀번호 저장" 선택
+        2. 함수이용 - 로그인후 OpenAPI.KOA_Functions(_T("ShowAccountWindow"), _T("")) 호출
+		
+        ※ 계좌비밀번호 입력시 주의할 점 : 
+        OpenAPI는 계좌비밀번호를 검증하지 않고 입력된 값을 그대로 암호화하여 서버로 전송합니다.
+        계좌비밀번호 오류가 일어나지 않도록 오타 등 입력에 주의하시기 바랍니다.
+        
+		
+        [자동 로그인]
+        로그인 후에 계좌비밀번호 입력창을 통해 자동로그인을 설정할 수 있습니다.
+        계좌비밀번호 입력창에서 계좌비밀번호를 입력하고 "등록" 또는 "전체등록" 버튼을 눌러서 
+        비밀번호를 저장한 다음 아래에 있는 "AUTO" 옵션을 체크하면 자동 로그인을 위한 설정이 모두 끝납니다.
+        다음번 실행부터 로그인시 로그인창에 계정 입력하는 과정 없이 로그인과정이 자동으로 실행됩니다.
+        자동로그인시에는 버전처리(최신파일 업데이트) 과정을 생략합니다.
+        단 거래소로부터 수신되는 Daily배치 파일인 종목정보 파일은 자동로그인시에도 다운받습니다.
+
+        ※ 자동로그인 사용시 주의할 점 : 
+        정기적으로 일주일에 한번 이상 자동로그인 해지 후 수동로그인으로 버전처리를 받아주시길 권장드립니다.
+        버전처리 없이 자동로그인을 계속 사용시에 예기치 않은 오동작의 가능성이 있습니다.
+        장종료 후 혹은 주말에도 버전처리는 정상 수행됩니다.
+
+		
+        [버전 처리(최신파일 다운로드)]
+        OpenAPI의 업데이트가 있는 경우
+        로그인할때 버전처리 알림창이 출력 됩니다.
+        이 알림창이 표시되면 실행한 OpenAPI프로그램(KOA스튜디오포함)을 
+        먼저 모두 종료한다음 알림창에 있는 확인버튼을 눌러야 합니다.
+        그렇지 않으면 버전처리가 정상적으로 끝나지 않아서 로그인할때마다 버전처리 알림창이 반복됩니다.
+        이렇게 OpenAPI프로그램을 모두 종료한 다음 알림창을 닫아주면 
+        버전처리가 자동으로 진행/완료 되고 종료했던 프로그램을 재실행 해주면 됩니다.
+        버전처리가 정상적으로 완료된 이후에는 다음번 버전처리가 있을때까지 접속시 해당 알림창이 실행되지 않습니다.
+
+		
+        [필수 버전처리 (자동로그인 강제해지)]
+        OpenAPI 운영시 사용자가 필수적으로 버전처리를 받아야 하는 업데이트가 있는 경우,
+        버전처리를 위해 자동로그인이 강제 해지되는 기능이 작동할 수 있습니다.
+        (이때 버전처리완료 후 접속하여 자동로그인을 재설정하실 수 있습니다.)
+        자동로그인이 강제해지되는 업데이트는 사용자의 불편함을 줄일 수 있도록 최소화하여 운영됩니다.
+		
+		
+        [모의투자]
+        로그인 창에서 모의투자접속에 체크하면 모의투자로 접속하며 이 체크를 풀면 실거래 서버로 접속합니다.
+        (KOA Studio 프로그램은 모의투자로만 접속가능합니다. 따라서 모의투자접속 체크 해지가 되지 않습니다.)
+        모의투자 접속은 (상시)모의투자 신청 이후에 가능하며 신청여부는 영웅문4 HTS의 모의투자 신청여부와 공유됩니다.
+        모의투자 계좌번호, 주문 가능종목, 수수료등 규정은 실거래 시스템과 차이가 있으며 아래 주소에서 확인 가능합니다.
+        https://www.kiwoom.com/h/mock/ordinary/VMockTotalSMAIN1View?dummyVal=0
+        
+		
+        [중복로그인]
+        OpenAPI는 보안정책으로 인해 동일ID에대한 중복로그인을 허용하지 않습니다.
+        동일한ID로 중복로그인시에 마지막 로그인한 접속만 유지되고 이전에 로그인한 접속은 단절됩니다.
+        모의투자서버 로그인 역시 중복로그인을 허용하지 않습니다.
+        (동일한 ID로 실거래 서버 로그인과 모의투자로 중복로그인은 가능합니다.)
+        동일한ID로 OpenAPI, 영웅문 HTS, MTS 의 중복로그인이 가능합니다.
+        동일PC에서 서로다른 ID로 복수실행이 가능합니다. 다만 OpenAPI 실행에 필요한 파일에
+        동시에 접근하면서 오동작을 일으킬 수 있습니다. 하나의 PC에서 하나의 실행을 권장합니다.
+
+        ]]> </subject>
+        <subject name="관련함수" type="function decs" >
+          <function type="funct" id="1" name="LONG CommConnect()" >
+          <![CDATA[
+          [LONG CommConnect()]
+          
+          수동 로그인설정인 경우 로그인창을 출력.
+          자동로그인 설정인 경우 로그인창에서 자동으로 로그인을 시도합니다.]]>
+          </function>
+          <function type="funct" id="2" name="void CommTerminate()" >
+          <![CDATA[
+          [void CommTerminate()]
+          
+          프로그램 종료없이 서버와의 접속만 단절시키는 함수입니다.
+          ※ 함수 사용 후 사용자의 오해소지가 생기는 이유로 더 이상 사용할 수 없는 함수입니다.]]>
+          </function>
+          <function type="funct" id="15" name="LONG GetConnectState()" >
+          <![CDATA[
+          [LONG GetConnectState()]
+          
+          서버와 현재 접속 상태를 알려줍니다.
+          리턴값 1:연결, 0:연결안됨
+          ]]>
+          </function>
+          <function type="funct" id="15" name="BSTR GetLoginInfo(BSTR sTag)" >
+          <![CDATA[
+          [LONG GetLoginInfo()]
+          
+          로그인 후 사용할 수 있으며 인자값에 대응하는 정보를 얻을 수 있습니다.
+          
+          인자는 다음값을 사용할 수 있습니다.
+          
+          "ACCOUNT_CNT" : 보유계좌 갯수를 반환합니다.
+          "ACCLIST" 또는 "ACCNO" : 구분자 ';'로 연결된 보유계좌 목록을 반환합니다.
+          "USER_ID" : 사용자 ID를 반환합니다.
+          "USER_NAME" : 사용자 이름을 반환합니다.
+          "GetServerGubun" : 접속서버 구분을 반환합니다.(1 : 모의투자, 나머지 : 실거래 서버)
+          "KEY_BSECGB" : 키보드 보안 해지여부를 반환합니다.(0 : 정상, 1 : 해지)
+          "FIREW_SECGB" : 방화벽 설정여부를 반환합니다.(0 : 미설정, 1 : 설정, 2 : 해지)
+          
+          리턴값
+          인자값에 대응하는 정보를 얻을 수 있습니다.
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          [보유계좌 목록 예시]
+          
+          CString   strAcctList = GetLoginInfo("ACCLIST");
+          여기서 strAcctList는 ';'로 분리한 보유계좌 목록임
+          예) "3040525910;5678905510;3040526010"
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          ]]>
+          </function>
+          <function type="event" id="3" name="void OnEventConnect(long nErrCode)" >
+          <![CDATA[
+          [OnEventConnect()이벤트]
+          
+          OnEventConnect(
+          long nErrCode   // 로그인 상태를 전달하는데 자세한 내용은 아래 상세내용 참고
+          )
+          
+          로그인 처리 이벤트입니다. 성공이면 인자값 nErrCode가 0이며 에러는 다음과 같은 값이 전달됩니다.
+ 
+          nErrCode별 상세내용
+          -100 사용자 정보교환 실패
+          -101 서버접속 실패
+          -102 버전처리 실패
+          ]]>
+          </function>
+          <function type="event" id="3" name="void OnReceiveMsg(BSTR sScrNo, BSTR sRQName, BSTR sTrCode, BSTR sMsg)" >
+          <![CDATA[
+          [OnReceiveMsg()이벤트]
+          
+          OnReceiveMsg(
+          BSTR sScrNo,   // 화면번호
+          BSTR sRQName,  // 사용자 구분명
+          BSTR sTrCode,  // TR이름
+          BSTR sMsg     // 서버에서 전달하는 메시지
+          )
+          
+          데이터 요청 또는 주문전송 후에 서버가 보낸 메시지를 수신합니다.
+          예) "조회가 완료되었습니다" 
+          예) "계좌번호 입력을 확인해주세요" 
+          예) "조회할 자료가 없습니다." 
+          예) "증거금 부족으로 주문이 거부되었습니다."
+		  
+          ※ 주의할 점 : 
+          메시지에 포함된 6자리 코드번호는 변경될 수 있으니, 여기에 수신된 코드번호를 특정 용도로 사용하지 마시기 바랍니다.
+          ]]>
+          </function>
+        </subject>
+        <!-- // 우선 막아둔다.
+      <subject type="code" name="C++"> <![CDATA[로그인 버전처리 C++코드]]> </subject>
+      <subject type="code" name="C#"> <![CDATA[로그인 버전처리 C#코드]]> </subject>
+      <subject type="code" name="VB"> <![CDATA[로그인 버전처리 VB코드]]> </subject>
+      -->
+    </Content>
+    <Content name="조회와 실시간 데이터 처리">
+      <subject name="기본설명" type="desc"> <![CDATA[
+      
+      [대체거래소 - 조회, 실시간 시세]
+
+      ※ 주의사항
+      OpenAPI TR목록은 요건에 따라 수시로 변경될 수 있으로 주기적으로 OpenAPI버전처리후 KOA Studio로 확인해주세요.
+      
+      대체거래소 지원으로 한국거래소(이하 KRX), 넥스트레이드(이하 NXT), 통합종목(또는 통합호가종목, 이하 AL)별 종목코드로 분류
+
+      종목코드로 분기 (대상TR 68개)
+      입력항목에 "종목코드"가 있는 TR (OPT10001, OPT10002, OPT10003 등)에서 조회
+      KRX조회는 기존 6자리 종목코드 그대로 사용
+      NXT, 통합종목은 기존 6자리 종목코드에 "_NX", "_AL"추가
+      예시) "039490"의 KRX, NXT, 통합종목 종목코드 "039490", "039490_NX", "039490_AL"
+
+      // 통합종목 조회 요청
+      SetInputValue("종목코드"	, "039490_AL");
+      CommRqData(RQName	, "OPT10001"	,  "0"	, "화면번호"); 
+
+      // NXT 조회 요청
+      SetInputValue("종목코드"	, "039490_NX");
+      CommRqData(RQName	, "OPT10001"	, "0"	, "화면번호");
+
+      실시간 시세데이터, 종목코드
+      // 실시간 시세 데이터 종목코드는 조회한 종목코드로 전달
+      "039490_AL" 조회시 "종목코드 = 039490_AL"
+      "039490_NX" 조회시 "종목코드 = 039490_NX"
+
+      TR 입력항목 "거래소구분" 추가 (대상 TR 43개)
+      거래소구분=1:KRX, 2:NXT, 3:통합
+      거래소구분=1, 2, 3으로 조회시 각각 KRX, NXT, 통합종목 데이터 조회
+
+      OPT10016 : 신고저가요청
+      OPT10017 : 상하한가요청
+      OPT10018 : 고저가근접요청
+      OPT10019 : 가격급등락요청
+      OPT10020 : 호가잔량상위요청
+      OPT10021 : 호가잔량급증요청
+      OPT10022 : 잔량율급증요청
+      OPT10023 : 거래량급증요청
+      OPT10024 : 거래량갱신요청
+      OPT10025 : 매물대집중요청
+      OPT10026 : 고저PER요청
+      OPT10027 : 전일대비등락률상위요청
+      OPT10028 : 시가대비등락률요청
+      OPT10029 : 예상체결등락률상위요청
+      OPT10030 : 당일거래량상위요청
+      OPT10031 : 전일거래량상위요청
+      OPT10032 : 거래대금상위요청
+      OPT10033 : 신용비율상위요청
+      OPT10034 : 외인기간별매매상위요청
+      OPT10035 : 외인연속순매매상위요청
+      OPT10036 : 외인한도소진율증가상위
+      OPT10037 : 외국계창구매매상위요청
+      OPT10039 : 증권사별매매상위요청
+      OPT10042 : 순매수거래원순위요청
+      OPT10043 : 거래원매물대분석요청
+      OPT10047 : 체결강도추이일별요청
+      OPT10051 : 업종별투자자순매수요청
+      OPT10052 : 거래원순간거래량요청
+      OPT10054 : 변동성완화장치발동종목요청
+      OPT10058 : 투자자별일별매매종목요청
+      OPT10062 : 동일순매매순위요청
+      OPT10063 : 장중투자자별매매요청
+      OPT10066 : 장중투자자별매매차트요청
+      OPT10131 : 기관외국인연속매매현황요청
+      OPT40004 : ETF전체시세요청
+      OPT90001 : 테마그룹별요청
+      OPT90002 : 테마구성종목요청
+      OPT90003 : 프로그램순매수상위50요청
+      OPT90004 : 종목별프로그램매매현황요청
+      OPT90005 : 프로그램매매추이요청
+      OPT90006 : 프로그램매매차익잔고추이요청
+      OPT90007 : 프로그램매매누적추이요청
+      OPT90009 : 외국인기관매매상위요청
+
+      ※ 주의사항
+      OpenAPI TR목록은 요건에 따라 수시로 변경될 수 있으로 OpenAPI버전처리후 KOA Studio로 확인해주세요.
+      
+      거래소구분=0:통합, 1:KRX, 2:NXT (대상TR 3개)
+      거래소구분=0, 1, 2으로 조회시 각각 통합종목 시세, KRX시세, NXT 시세 조회
+      OPT10075 : 미체결요청
+      OPT10076 : 체결요청
+      OPT10085 : 계좌수익률요청
+
+      거래소구분=KRX:한국거래소, NXT:대체거래소 (대상TR 3개)
+      OPW00004 : 계좌평가현황요청
+      OPW00005 : 체결잔고요청
+      OPW00018 : 계좌평가잔고내역요청
+
+      거래소구분=%:전체, KRX:한국거래소, NXT:대체거래소, SOR:최선주문집행 (대상TR 3개)
+      OPW00007 : 계좌별주문체결내역상세요청
+      OPW00009 : 계좌별주문체결현황요청
+      OPW00015 : 위탁종합거래내역요청
+      
+      
+      [조회처리(조회요청)]
+      OpenAPI가 제공하는 데이터중에서 원하는 데이터를 서버에 요청해서 수신 받는 것을 말합니다.
+      이는 하나의 TR(Transaction)단위로 처리됩니다.
+      각 TR은 서버와 데이터를 주고받을때 약속된 규약입니다. 
+      각각의 TR은 입력부분(Input)과 출력부분(Output)을 가지고 있습니다.
+      Input은 사용하는 TR에따라 항목이 달라지며 사용자(고객)가 입력해야 하는 부분이고,
+      Output은 요청에대한 서버의 응답으로 수신되는 데이터 입니다.
+      Output은 여러항목으로 제공되며 필요한 항목의 값만을 골라서 얻을 수 있습니다.
+      
+      출력부분은 항목이 하나로 전달되는 싱글데이터와 복수의 건수로 전달되는 멀티데이터가 있습니다.
+      TR에 따라 싱글데이터(또는 멀티데이터)만 있거나 둘다 있는 경우도 있습니다.
+      OPT10070 : 당일주요거래원요청 - 싱글데이터
+      OPT10081 : 주식일봉차트조회요청 - 싱글 + 멀티데이터
+      
+      OpenAPI가 제공하는 TR들은 KOA Studio의 "TR목록" 탭에서 찾아볼 수 있습니다.
+      이중 필요한 TR을 선택하여 약속된 Input값을 입력 후 서버에 요청하면
+      해당 TR에 정의되어 있는 Output 항목들의 값을 구할 수 있습니다.
+      
+      ※ 주의할 점 : 
+      조회시 입력값 항목들은 SetInputValue 함수로 반드시 순서에 맞게 입력해야 합니다.
+      계좌비밀번호는 별도의 입력창으로 입력/등록하고 조회시에는 공백으로 입력합니다.
+          ex) SetInputValue("비밀번호"	,  ""); 
+      
+      
+      [조회요청/수신 사용법]
+      조회요청하고자 하는 TR의 입력값(input)을 셋팅한뒤 조회요청을 합니다.
+      서버는 요청에대한 결과를 보내주고 이벤트를 발생시켜 데이터를 수신합니다.
+      수신한 데이터중 필요한 항목에 해당하는 값을 구합니다.
+		
+      SetInputValue(사용자 호출) -> CommRqData(사용자 호출) -> OnReceiveTrData(이벤트 발생)
+		
+		
+      [연속조회]
+      TR별로 한번에 전달할 수 있는 데이터 갯수가 정해져 있습니다. 
+      이 갯수보다 조회할 데이터가 많을때는 연속조회로 모든 데이터를 조회할 수 있습니다.
+      연속조회는 CommRqData()에서 인자값만 바꿔서 다시 요청합니다.
+
+      CommRqData("일별데이터조회", "OPT10086" , 0, "0001");      
+      위처럼 요청한 데이터가 한번에 수신된 데이터보다 더 많이 있다면
+      OnReceiveTRData()이벤트에서 5번째 인자값(sPrevNext)에 "2"가 전달됩니다.
+      이때 더 많은 데이터를 요청하고자 할때는
+      CommRqData("일별데이터조회", "OPT10086" , 2, "0001"); 
+      위처럼 3번째 인자값을 2로 설정해서 조회하시면 됩니다.
+      정리하면 다음과 같습니다.
+      OpenAPI.CommRqData("일별데이터조회", "OPT10086" , 0, "0001"); // 처음조회시 혹은 연속데이터가 없을때
+      OpenAPI.CommRqData("일별데이터조회", "OPT10086" , 2, "0001"); // 연속조회시 (필요에따라 요청)
+	  
+      ※ 주의할 점 : 
+      중간에 다른 TR 요청이 있는 경우 연속조회가 되지 않습니다.
+      
+	  
+      [실시간 데이터]
+      시세조회요청이 성공하면 해당종목의 실시간시세 데이터가 서버에 자동으로 등록됩니다.
+      이후 해당종목의 실시간 시세데이터는 OnReceiveRealData() 이벤트로 수신됩니다.
+      또는 시세조회가 필요없고 실시간시세만 필요한 경우는 
+      SetRealReg 함수를 사용하여 특정종목(복수종목 가능)의 실시간시세를 서버에 등록할 수 있습니다.
+	  
+      ※ SetRealReg() 함수는 조건검색 항목에서 사용법을 설명하고 있습니다.
+	  
+      KOA Studio의 실시간 탭을 여시면 Real Type (실시간타입) 목록을 확인할 수 있습니다.
+      이들 하나하나를 실시간 타입이라고 합니다.
+      각 실시간타입에 포함되는 데이터항목들의 FID(Field ID)들이 그룹핑되어 있습니다.
+      예를들어 실시간 타입 "주식시세"는 FID 10 현재가 ~ FID 568 하한가발생시간까지 FID로 구성되며 한꺼번에 전달됩니다.
+      또 실시간 타입 "주식체결"는 FID 20 체결시간 ~ FID 1313 Extra Item까지 FID가 한번에 전달됩니다.
+      
+	  
+      [실시간시세 사용법]
+      시세관련 TR서비스를 요청하는 경우 자동으로 서버에 해당 종목의 실시간시세가 등록 됩니다.
+      시세관련 TR서비스 조회요청이 불필요한 경우 SetRealReg 함수를 통해 조회없이 실시간시세 등록이 가능합니다.
+		
+      방법1. 조회 서비스 이용
+      SetInputValue(사용자 호출) -> CommRqData(사용자 호출) -> OnReceiveTrData(이벤트 발생) ->OnReceiveRealData(이벤트 발생)
+      방법2. SetRealReg 함수 이용
+      SetRealReg(사용자 호출) -> OnReceiveRealData(이벤트 발생)
+
+
+      [주문관련 실시간 데이터]
+      실시간 타입 "주문체결", "잔고", "파생잔고"는 주문관련 실시간 데이터를 전달합니다.
+      데이터요청이나 서버등록 필요없이 주문발생시 수신되는 실시간타입 입니다.
+
+      실시간 시세와는 다르게 조회요청이나 SetRealReg() 함수로 등록해서 사용할 수 없습니다.
+      반드시 주문을 하셔야 발생합니다.
+      수신 이벤트는 OnReceiveChejanData() 입니다.
+      영웅문4 HTS, 영웅문S MTS 를 통한 주문들도 동일ID로 접속한 경우 OpenAPI로 수신됩니다.
+
+	  
+      아래 실시간 타입은 시스템 내부용으로, 사용자가 사용할수 없는 실시간 타입입니다.
+      1. 임의연장정보
+      2. 시간외종목정보
+      3. 주식거래원
+      4. 순간체결량
+      5. 선물옵션합계
+      6. 투자자별매매
+	  
+	  
+      ]]> </subject>
+      <subject name="관련함수" type="function decs" >
+          <function type="funct" id="3" name="LONG CommRqData(BSTR sRQName, BSTR sTrCode, long nPrevNext, BSTR sScreenNo)">
+          <![CDATA[
+          [CommRqData() 함수]
+          
+          CommRqData(
+          BSTR sRQName,    // 사용자 구분명 (임의로 지정, 한글지원)
+          BSTR sTrCode,    // 조회하려는 TR이름
+          long nPrevNext,  // 연속조회여부
+          BSTR sScreenNo  // 화면번호 (4자리 숫자 임의로 지정)
+          )
+          
+          조회요청 함수입니다.
+          리턴값 0이면 조회요청 정상 나머지는 에러
+		  
+          예)
+          -200 시세과부하
+          -201 조회전문작성 에러
+          
+          
+          ]]>
+          </function>
+          <function type="funct" id="7" name="void SetInputValue(BSTR sID, BSTR sValue)">
+          <![CDATA[
+          [SetInputValue() 함수]
+          
+          SetInputValue(
+          BSTR sID,     // TR에 명시된 Input이름
+          BSTR sValue   // Input이름으로 지정한 값
+          )
+          
+          조회요청시 TR의 Input값을 지정하는 함수입니다.
+          CommRqData 호출 전에 입력값들을 셋팅합니다.
+          각 TR마다 Input 항목이 다릅니다. 순서에 맞게 Input 값들을 셋팅해야 합니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          예)
+          [OPT10081 : 주식일봉차트조회요청예시]
+          
+          SetInputValue("종목코드"	,  "039490"); // 첫번째 입력값 설정
+          SetInputValue("기준일자"	,  "20160101");// 두번째 입력값 설정
+          SetInputValue("수정주가구분"	,  "1"); // 세번째 입력값 설정
+          LONG lRet = CommRqData( "RQName","OPT10081", "0","0600");// 조회요청
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+          <function type="funct" id="9" name="BSTR CommGetData(BSTR sJongmokCode, BSTR sRealType, BSTR sFieldName, long nIndex, BSTR sInnerFieldName)">
+          <![CDATA[
+          [CommGetData() 함수]
+          
+          일부 TR에서 사용상 제약이 있음므로 이 함수 대신 GetCommData()함수를 사용하시기 바랍니다.
+          ]]>
+          </function>
+          <function type="funct" id="10" name="void DisconnectRealData(BSTR sScnNo)" >
+          <![CDATA[
+          [DisconnectRealData() 함수]
+          
+          DisconnectRealData(
+          BSTR sScnNo // 화면번호 
+          )
+          
+          시세데이터를 요청할때 사용된 화면번호를 이용하여 
+          해당 화면번호로 등록되어져 있는 종목의 실시간시세를 서버에 등록해지 요청합니다.
+          이후 해당 종목의 실시간시세는 수신되지 않습니다.
+          단, 해당 종목이 또다른 화면번호로 실시간 등록되어 있는 경우 해당종목에대한 실시간시세 데이터는 계속 수신됩니다.
+          ]]>
+          </function>
+          <function type="funct" id="11" name="LONG GetRepeatCnt(BSTR sTrCode, BSTR sRecordName)" >
+          <![CDATA[
+          [GetRepeatCnt() 함수]
+          
+          GetRepeatCnt(
+          BSTR sTrCode, // TR 이름
+          BSTR sRecordName // 레코드 이름
+          )
+          
+          데이터 수신시 멀티데이터의 갯수(반복수)를 얻을수 있습니다. 
+          예를들어 차트조회는 한번에 최대 900개 데이터를 수신할 수 있는데 
+          이렇게 수신한 데이터갯수를 얻을때 사용합니다.
+          이 함수는 OnReceiveTRData()이벤트가 발생될때 그 안에서 사용해야 합니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          예)
+          [OPT10081 : 주식일봉차트조회요청예시]
+          
+          OnReceiveTrData(...)
+          {
+            if(strRQName == _T("주식일봉차트"))
+            {
+              int nCnt = OpenAPI.GetRepeatCnt(sTrcode, strRQName);		// 데이터 반복건수 구함
+              for (int nIdx = 0; nIdx < nCnt; nIdx++)
+              {
+                strData = OpenAPI.GetCommData(sTrcode, strRQName, nIdx, _T("거래량"));   strData.Trim();
+                strData = OpenAPI.GetCommData(sTrcode, strRQName, nIdx, _T("시가"));   strData.Trim();
+                strData = OpenAPI.GetCommData(sTrcode, strRQName, nIdx, _T("고가"));   strData.Trim();
+                strData = OpenAPI.GetCommData(sTrcode, strRQName, nIdx, _T("저가"));   strData.Trim();
+                strData = OpenAPI.GetCommData(sTrcode, strRQName, nIdx, _T("현재가"));   strData.Trim();
+              }
+            }
+          }
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+          <function type="funct" id="12" name="LONG CommKwRqData(BSTR sArrCode, BOOL bNext, int nCodeCount, int nTypeFlag, BSTR sRQName, BSTR sScreenNo)" >
+          <![CDATA[
+          [CommKwRqData() 함수]
+          
+          CommKwRqData(
+          BSTR sArrCode,    // 조회하려는 종목코드 리스트
+          BOOL bNext,   // 연속조회 여부 0:기본값, 1:연속조회(지원안함)
+          int nCodeCount,   // 종목코드 갯수
+          int nTypeFlag,    // 0:주식 종목, 3:선물옵션 종목
+          BSTR sRQName,   // 사용자 구분명
+          BSTR sScreenNo    // 화면번호
+          )
+          
+          한번에 100종목까지 조회할 수 있는 복수종목 조회함수 입니다.
+          함수인자로 사용하는 종목코드 리스트는 조회하려는 종목코드 사이에 구분자';'를 추가해서 만들면 됩니다.
+          수신되는 데이터는 TR목록에서 복수종목정보요청(OPTKWFID) Output을 참고하시면 됩니다.
+          ※ OPTKWFID TR은 CommKwRqData()함수 전용으로 일번적인 조회함수 CommRqData 로는 사용할 수 없습니다.
+          ※ OPTKWFID TR은 영웅문4 HTS의 관심종목과는 무관합니다.
+          ]]>
+          </function>
+          <function type="funct" id="24" name="BSTR GetCommData(BSTR strTrCode, BSTR strRecordName, long nIndex, BSTR strItemName)" >
+          <![CDATA[
+          [GetCommData() 함수]
+          
+          GetCommData(
+          BSTR strTrCode,   // TR 이름
+          BSTR strRecordName,   // 레코드이름
+          long nIndex,      // nIndex번째
+          BSTR strItemName) // TR에서 얻어오려는 출력항목이름
+          
+          OnReceiveTRData()이벤트가 발생될때 수신한 데이터를 얻어오는 함수입니다.
+          이 함수는 OnReceiveTRData()이벤트가 발생될때 그 안에서 사용해야 합니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          예)
+          [OPT10081 : 주식일봉차트조회요청예시]
+          
+          OnReceiveTrData(...)
+          {
+            if(strRQName == _T("주식일봉차트"))
+            {
+              int nCnt = OpenAPI.GetRepeatCnt(sTrcode, strRQName);
+              for (int nIdx = 0; nIdx < nCnt; nIdx++)
+              {
+                strData = OpenAPI.GetCommData(sTrcode, strRQName, nIdx, _T("거래량"));   strData.Trim();	// nIdx번째의 거래량 데이터 구함
+                strData = OpenAPI.GetCommData(sTrcode, strRQName, nIdx, _T("시가"));   strData.Trim();
+                strData = OpenAPI.GetCommData(sTrcode, strRQName, nIdx, _T("고가"));   strData.Trim();
+                strData = OpenAPI.GetCommData(sTrcode, strRQName, nIdx, _T("저가"));   strData.Trim();
+                strData = OpenAPI.GetCommData(sTrcode, strRQName, nIdx, _T("현재가"));   strData.Trim();
+              }
+            }
+          }
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+          <function type="funct" id="25" name="BSTR GetCommRealData(BSTR strCode, long nFid)" >
+          <![CDATA[
+          [GetCommRealData() 함수]
+          
+          GetCommRealData(
+          BSTR strCode,   // 종목코드
+          long nFid   // 실시간 타입에 포함된FID (Feild ID)
+          )
+          
+          실시간시세 데이터 수신 이벤트인 OnReceiveRealData() 가 발생될때 실시간데이터를 얻어오는 함수입니다.
+          이 함수는 OnReceiveRealData()이벤트가 발생될때 그 안에서 사용해야 합니다.
+          FID 값은 KOA Studio "실시간목록"탭 에서 확인할 수 있습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          예)
+          [주식체결 실시간 데이터 예시]
+          
+          if(strRealType == _T("주식체결"))	// OnReceiveRealData 이벤트로 수신된 실시간타입이 "주식체결" 이면
+          {
+            strRealData = OpenAPI.GetCommRealData(strCode, 10);   // 현재가
+            strRealData = OpenAPI.GetCommRealData(strCode, 13);   // 누적거래량
+            strRealData = OpenAPI.GetCommRealData(strCode, 228);    // 체결강도
+            strRealData = OpenAPI.GetCommRealData(strCode, 20);  // 체결시간
+          }
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+          <function type="funct" id="56" name="VARIANT GetCommDataEx(BSTR strTrCode, BSTR strRecordName)" >
+          <![CDATA[
+          [GetCommDataEx() 함수]
+          
+          GetCommDataEx(
+          BSTR strTrCode,   // TR 이름
+          BSTR strRecordName  // 레코드이름
+          )
+          
+          조회 수신데이터 크기가 큰 차트데이터를 한번에 VARIANT형 데이터로 가져올 목적으로 만든 차트조회 전용함수입니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          예)
+          [차트일봉데이터 예시]
+          
+          OnReceiveTrDataKhopenapictrl(...)
+          {
+            if(strRQName == _T("주식일봉차트"))
+            {
+              VARIANT   vTemp = OpenAPI.GetCommDataEx(strTrCode, strRQName);
+              long	lURows, lUCols;
+              long	nIndex[2]
+              COleSafeArray saMatrix(vTemp);
+              VARIANT vDummy;
+              VariantInit(&vDummy);
+              saMatrix.GetUBound(1, &lURows); // 데이터 전체갯수(데이터 반복횟수)
+              saMatrix.GetUBound(2, &lUCols); // 출력항목갯수
+
+              for(int nRow = 0; nRow <= lURows; nRow ++)
+              {
+                for(int nCol = 0; nCol <= lUCols; nCol ++)
+                {
+                  nIndex[0] = lURows;
+                  nIndex[1] = lUCols;
+                  saMatrix.GetElement(nIndex, &vDummy);
+                  ::SysFreeString(vDummy.bstrVal);
+                }
+              }
+              saMatrix.Clear();
+              VariantClear(&vTemp);
+            }
+          }
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          ]]>
+          </function>
+          <function type="event" id="1" name="void OnReceiveTrData(BSTR sScrNo, BSTR sRQName, BSTR sTrCode, BSTR sRecordName, BSTR sPrevNext, LONG nDataLength, BSTR sErrorCode, BSTR sMessage, BSTR sSplmMsg)" >
+          <![CDATA[
+          [OnReceiveTrData() 이벤트]
+          
+          void OnReceiveTrData(
+          BSTR sScrNo,       // 화면번호
+          BSTR sRQName,      // 사용자 구분명
+          BSTR sTrCode,      // TR이름
+          BSTR sRecordName,  // 레코드 이름
+          BSTR sPrevNext,    // 연속조회 유무를 판단하는 값 0: 연속(추가조회)데이터 없음, 2:연속(추가조회) 데이터 있음
+          LONG nDataLength,  // 사용안함.
+          BSTR sErrorCode,   // 사용안함.
+          BSTR sMessage,     // 사용안함.
+          BSTR sSplmMsg     // 사용안함.
+          )
+          
+          요청했던 조회데이터를 수신했을때 발생됩니다.
+          수신된 데이터는 이 이벤트내부에서 GetCommData()함수를 이용해서 얻어올 수 있습니다.
+          
+          ]]>
+          </function>
+          <function type="event" id="2" name="void OnReceiveRealData(BSTR sCode, BSTR sRealType, BSTR sRealData)" >
+          <![CDATA[
+          [OnReceiveRealData()이벤트]
+          
+          OnReceiveRealData(
+          BSTR sCode,        // 종목코드
+          BSTR sRealType,    // 실시간타입
+          BSTR sRealData    // 실시간 데이터 전문 (사용불가)
+          )
+          
+          실시간시세 데이터가 수신될때마다 종목단위로 발생됩니다.
+          SetRealReg()함수로 등록한 실시간 데이터도 이 이벤트로 전달됩니다.
+          GetCommRealData()함수를 이용해서 수신된 데이터를 얻을수 있습니다.
+          
+          ]]>
+          </function>
+          <function type="event" id="3" name="void OnReceiveMsg(BSTR sScrNo, BSTR sRQName, BSTR sTrCode, BSTR sMsg)" >
+          <![CDATA[
+          [OnReceiveMsg()이벤트]
+          
+          OnReceiveMsg(
+          BSTR sScrNo,   // 화면번호
+          BSTR sRQName,  // 사용자 구분명
+          BSTR sTrCode,  // TR이름
+          BSTR sMsg     // 서버에서 전달하는 메시지
+          )
+          
+          주문전송 또는 계좌, 잔고관련 데이터 조회요청으로 서버 메시지가 수신되면 호출됩니다.
+          ※ 메시지에 포함된 6자리 코드번호는 변경될 수 있으니, 여기에 수신된 코드번호를 특정 용도로 사용하지 마시기 바랍니다.
+		  
+          예) 
+          "조회가 완료되었습니다."
+          "증거금 부족으로 주문이 거부되었습니다."
+          "정정할 원주문 내역이 없습니다."
+          "비밀번호 입력을 확인해주시기 바랍니다."
+		  
+          ]]>
+          </function>
+      </subject>
+      <!-- // 우선 막아둔다.
+      <subject type="code" name="C++"><![CDATA[조회처리 C++]]> </subject>
+      <subject type="code" name="C#"><![CDATA[조회처리 C#]]> </subject>
+      <subject type="code" name="VB"><![CDATA[조회처리 VB]]> </subject>
+      -->
+    </Content>
+    <Content name="주문과 잔고처리">
+        <subject name="기본설명" type="desc"> <![CDATA[
+        [개요]
+        OpenAPI를 이용하면 국내주식과 코스피200 지수선물/옵션을 거래할 수 있습니다.
+        상품별로 전용 주문함수가 있으며 SendOrderCredit()함수를 이용해서 대주를 제외한 신용주문을 지원합니다.
+        ※ 정정주문은 원주문에 대한 가격정정만 가능하며 거래구분을 변경하는 정정주문은 지원하지 않습니다.
+        
+        [대체거래소 주문]
+        ※ 종목코드는 현금/신용주문 모두 기존 6자리 종목코드 사용. "039490"
+        NXT, SOR 주문유형(또는 매매유형)추가, 현금/신용주문함수 공통
+
+        NXT주문   21=NXT매수, 22=NXT매도, 23=NXT취소, 25= NXT정정 (주의 24 아님!!)
+        SOR주문   11=SOR매수, 12=SOR매도, 13=SOR취소, 15=SOR정정 (주의 14 아님!!)
+        
+        중간가 주문
+        현금주문, 신용주문 공통으로 거래구분(호가구분)값 "29"로 설정, 주문가격은 '0'으로 설정
+        
+        스탑지정가 주문
+        기존 함수는 스탑가 설정불가로 KOA_Functions()를 이용한 별도 현금/신용 주문함수를 제공
+        기존 현금주문, 신용 주문함수에 2개 인자 "스탑지정가격", "예약인자" 추가
+        
+        현금주문 예시
+        KOA_Functions("SendOrder_Ex", strParam); // 기본 함수명과 파라미터
+        KOA_Functions("sendorder_ex", strParam); // 소문자 함수명 사용가능
+        
+        
+        신용주문 예시
+        KOA_Functions("SendOrderCredit_Ex", strParam); // 기본 함수명과 파라미터
+        KOA_Functions("sendordercredit_ex", strParam); // 소문자 함수명 사용가능
+        
+        
+        [계좌비밀번호 설정]
+        OpenAPI는 로그인 후 한번 계좌비밀번호를 입력/등록 해야 합니다.
+        계좌비밀번호 설정은 계좌비밀번호 입력창에서만 가능합니다.
+        이 입력창을 출력하는 방법은 2가지로 제공됩니다.
+        1. 메뉴이용 - 로그인후 윈도우의 작업표시줄상에 깜박이는 트레이아이콘의 
+          마우스우측 메뉴(모니터 오른쪽 하단)에서 "계좌비밀번호 저장" 선택
+        2. 함수이용 - 로그인후 OpenAPI.KOA_Functions(_T("ShowAccountWindow"), _T("")) 호출
+        ※ 계좌비밀번호 입력시 주의할 점 : 
+        OpenAPI는 계좌비밀번호를 검증하지 않고 입력된 값을 그대로 암호화하여 서버로 전송합니다.
+        계좌비밀번호 오류가 일어나지 않도록 오타 등 입력에 주의하시기 바랍니다.
+
+        
+        [주문처리단계]
+        주문 처리 순서
+        SendOrder(주문발생) -> OnReceiveTRData(주문응답) -> OnReceiveMsg(주문메세지수신) -> OnReceiveChejan(주문접수/체결)
+        ※ 주의(역전현상) : 주문건수가 폭증하는 경우 OnReceiveChejan 이벤트가 OnReceiveTRData 이벤트보다 앞서 수신될 수 있습니다.
+        
+        각 단계 설명
+        SendOrder - 사용자가 호출. 리턴값 0인 경우 함수호출 정상 (주문성공이 아님)
+        OnReceiveTRData - 주문발생시 첫번째 서버응답. 주문번호 취득 (주문번호가 없다면 주문거부 등 비정상주문)
+        OnReceiveMsg - 주문거부 사유를 포함한 서버메세지 수신
+        OnReceiveChejan - 주문 상태에따른 실시간수신 (주문접수, 주문체결, 잔고변경 각 단계별로 수신됨)
+        
+        주문성공 여부 판단
+        OnReceiveTRData()이벤트는 주로 조회요청후 데이터수신 이벤트지만 주문시에도 발생됩니다.
+        주문정상인 경우 이 이벤트내부에서 주문번호를 얻을 수 있습니다.
+        비정상주문(주문실패)인 경우 주문번호는 공백("")으로 전달됩니다.
+        각 주문함수의 리턴값이 0(성공)이여도 장 개시전 주문, 시장가 주문가격입력, 호가범위를 벗어난 주문가격 입력등 
+        주문은 다양한 원인으로 실패할수 있습니다.
+
+        주문성공여부 판단 예시
+        OnReceiveTRData(sScreenNo, sRqName, sTrCode, ....) // 이벤트 처리부분
+        {
+            sData = OpenAPI.GetCommData(sTrCode, sRqName, 0, "주문번호");// sData에 주문번호가 있으면 주문성공, 공백이면 주문실패
+        }
+        
+        [주문 유의사항]
+        ※ 주문은 1초당 5회로 제한 됩니다. (조회횟수와는 별개로 카운트 됩니다.)
+        ※ 주문가능수량 이상으로 주문하는 경우 미수주문으로 처리될 수 있습니다.
+              영웅문4 [0398] 화면등에서 계좌증거금 변경등록으로 100% 현금 주문만 가능하도록 설정할 수 있습니다.
+        ※ 시장가주문시 최대주문가능수량은 상한가를 기준으로 계산됩니다.
+        ※ 시장가주문시 주문가격은 0으로 입력합니다.
+        ※ OpenAPI에서는 거래구분 정정주문은 지원되지 않습니다. 
+              예) 지정가 매도 -> 시장가 매도로 정정 (불가. 원주문 취소 후 신규주문으로 진행하시기 바랍니다.)
+        ※ 주문내역은 영웅문HTS, MTS 등 매체간 공유됩니다.
+              타매체에서 발생시킨 주문체결도 OnReceiveChejan 이벤트로 실시간 수신됩니다.
+        ※ 모의투자 서버에서는 주문 불가 종목이 존재합니다.
+              모의투자 규정을 확인해주시기 바랍니다.
+              https://www.kiwoom.com/h/mock/ordinary/VMockTotalSMAIN1View?dummyVal=0
+        
+        [주문체결, 잔고 수신]
+        OnReceiveChejan()이벤트는 주문접수, 체결, 잔고변경시 발생됩니다.
+        이 이벤트를 통해 대부분의 주문관련 정보를 얻을 수 있습니다.
+        주문요청에 대한 응답은 주문접수, 주문체결, 잔고수신 순서로 진행됩니다.
+        (정정/취소 주문의 경우 주문접수 후에 주문확인 신호가 한번 더 수신됩니다.)
+        하나의 주문에대해 부분체결되는 경우 아래와 같은 순서로 OnReceiveChejan 이벤트가 발생됩니다.
+        
+        주문 ---> 접수 ---> 체결1 ---> 잔고1  ---> 체결2  ---> 잔고2... ---> 체결n  ---> 잔고n
+        
+        주문 응답의 구분은 OnReceiveChejanData()이벤트가 발생될때 전달되는 sGubun값을 이용합니다. 
+        sGubun값은 접수와 체결시 '0'값, 잔고변경은 '1'값을 가지게 됩니다. 
+        이값에 따라 실시간타입 "주문체결" 또는 "잔고" 타입이 사용됩니다.
+        
+		
+        [OnReceiveChejan()이벤트로 전달되는 FID목록정리]
+        
+        "9201" : "계좌번호" 
+        "9203" : "주문번호" 
+        "9001" : "종목코드" 
+        "913" : "주문상태" 
+        "302" : "종목명" 
+        "900" : "주문수량" 
+        "901" : "주문가격" 
+        "902" : "미체결수량" 
+        "903" : "체결누계금액" 
+        "904" : "원주문번호" 
+        "905" : "주문구분" 
+        "906" : "매매구분" 
+        "907" : "매도수구분" 
+        "908" : "주문/체결시간" 
+        "909" : "체결번호" 
+        "910" : "체결가" 
+        "911" : "체결량" 
+        "10" : "현재가" 
+        "27" : "(최우선)매도호가" 
+        "28" : "(최우선)매수호가" 
+        "914" : "단위체결가" 
+        "915" : "단위체결량" 
+        "919" : "거부사유" 
+        "920" : "화면번호" 
+        "917" : "신용구분" 
+        "916" : "대출일" 
+        "930" : "보유수량" 
+        "931" : "매입단가" 
+        "932" : "총매입가" 
+        "933" : "주문가능수량" 
+        "945" : "당일순매수수량" 
+        "946" : "매도/매수구분" 
+        "950" : "당일총매도손일" 
+        "951" : "예수금"  (지원안함)
+        "307" : "기준가" 
+        "8019" : "손익율" 
+        "957" : "신용금액" 
+        "958" : "신용이자" 
+        "918" : "만기일" 
+        "990" : "당일실현손익(유가)" 
+        "991" : "당일실현손익률(유가)" 
+        "992" : "당일실현손익(신용)" 
+        "993" : "당일실현손익률(신용)" 
+        "397" : "파생상품거래단위" 
+        "305" : "상한가" 
+        "306" : "하한가"
+		
+        ]]> </subject>
+        <subject name="관련함수" type="function decs" >
+          <function type="funct" id="5" name="LONG SendOrder( BSTR sRQName, BSTR sScreenNo, BSTR sAccNo, LONG nOrderType,	BSTR sCode, LONG nQty, LONG nPrice, BSTR sHogaGb, BSTR sOrgOrderNo )">
+          <![CDATA[
+          [SendOrder() 함수]
+          
+          SendOrder(
+          BSTR sRQName,     // 사용자 구분명
+          BSTR sScreenNo,   // 화면번호
+          BSTR sAccNo,      // 계좌번호 10자리
+          LONG nOrderType,  // 주문유형 1:신규매수, 2:신규매도 3:매수취소, 4:매도취소, 5:매수정정, 6:매도정정, SOR, NXT주문유형이 추가되었습니다.
+          BSTR sCode,       // 종목코드 (6자리)
+          LONG nQty,        // 주문수량
+          LONG nPrice,      // 주문가격
+          BSTR sHogaGb,     // 거래구분(혹은 호가구분)은 아래 참고
+          BSTR sOrgOrderNo  // 원주문번호. 신규주문에는 공백 입력, 정정/취소시 입력합니다.
+          )
+          
+          ※ 주문유형 추가
+          대체거래소 주문을 위해 다음 유형이 추가되었습니다.
+          11 : SOR매수, 12 : SOR매도, 13 : SOR취소, 15 : SOR정정, 21 : NXT매수, 22 : NXT매도, 23 : NXT취소, 25 : NXT정정
+          
+          서버에 주문을 전송하는 함수 입니다.
+          9개 인자값을 가진 주식주문 함수이며 리턴값이 0이면 함수호출 성공이며 나머지는 에러입니다.
+          주문성공여부는 OnReceiveTrData에서 주문번호가 있으면 주문성공, 공백이면 주문실패으로 판단하실수 있습니다.
+          
+          1초에 5회만 주문가능하며 그 이상 주문요청하면 에러 -308을 리턴합니다.
+          ※ 시장가주문시 주문가격은 0으로 입력합니다. 주문가능수량은 해당 종목의 상한가 기준으로 계산됩니다.
+          ※ 주문가격 입력필요
+          지정가(00), 조건부지정가(05), 지정가IOC(10), 지정가FOK(20) 
+
+          ※ 주문가격 불필요 (0으로 입력)
+          시장가(03), 최유리지정가(06), 최우선지정가(07), 중간가(29), 시장가IOC(13) 
+          최유리IOC(16), 시장가FOK(23), 최유리FOK(26), 장전시간외종가(61), 장후시간외종가(81)
+
+          ※ 주문증거금
+          아래 거래구분은 주문증거금을 상한가로 계산하므로 지정가 주문에 비해 주문가능수량이 적어지므로 주문가능수량 계산에 주의하셔야 합니다.
+          시장가(03), 최유리지정가(06), 최우선지정가(07), 시장가IOC(13), 최유리IOC(16), 시장가FOK(23), 최유리FOK(26)
+
+          ※ 취소주문일때 주문가격은 0으로 입력합니다.
+          
+          [거래구분]
+          00 : 지정가
+          03 : 시장가
+          05 : 조건부지정가
+          06 : 최유리지정가
+          07 : 최우선지정가
+          10 : 지정가IOC
+          13 : 시장가IOC
+          16 : 최유리IOC
+          20 : 지정가FOK
+          23 : 시장가FOK
+          26 : 최유리FOK
+          28 : 스탑지정가
+          29 : 중간가
+          61 : 장전시간외종가
+          62 : 시간외단일가매매
+          81 : 장후시간외종가
+          ※ 모의투자에서는 지정가 주문과 시장가 주문만 가능합니다.
+          
+          [정규장 외 주문]
+          장전 동시호가 주문
+              08:30 ~ 09:00.	거래구분 00:지정가/03:시장가 (일반주문처럼)
+              ※ 08:20 ~ 08:30 시간의 주문은 키움에서 대기하여 08:30 에 순서대로 거래소로 전송합니다.
+          장전시간외 종가
+              08:30 ~ 08:40. 	거래구분 61:장전시간외종가.  가격 0입력
+              ※ 전일 종가로 거래. 미체결시 자동취소되지 않음
+          장마감 동시호가 주문
+              15:20 ~ 15:30.	거래구분 00:지정가/03:시장가 (일반주문처럼)
+          장후 시간외 종가
+              15:40 ~ 16:00.	거래구분 81:장후시간외종가.  가격 0입력
+              ※ 당일 종가로 거래
+          시간외 단일가
+              16:00 ~ 18:00.	거래구분 62:시간외단일가.  가격 입력
+              ※ 10분 단위로 체결, 당일 종가대비 +-10% 가격으로 거래
+
+          ]]>
+          </function>
+          <function type="funct" id="6" name="LONG SendOrderFO(BSTR sRQName, BSTR sScreenNo, BSTR sAccNo, BSTR sCode, LONG lOrdKind, BSTR sSlbyTp, BSTR sOrdTp, LONG lQty, BSTR sPrice, BSTR sOrgOrdNo)" >
+          <![CDATA[
+          [SendOrderFO() 함수]
+          
+          SendOrderFO(
+          BSTR sRQName,     // 사용자 구분명
+          BSTR sScreenNo,   // 화면번호
+          BSTR sAccNo,      // 계좌번호 10자리 
+          BSTR sCode,       // 종목코드 
+          LONG lOrdKind,    // 주문종류 1:신규매매, 2:정정, 3:취소
+          BSTR sSlbyTp,     // 매매구분	1: 매도, 2:매수
+          BSTR sOrdTp,      // 거래구분(혹은 호가구분)은 아래 참고
+          LONG lQty,        // 주문수량 
+          BSTR sPrice,      // 주문가격 
+          BSTR sOrgOrdNo    // 원주문번호
+          )
+          
+          서버에 주문을 전송하는 함수 입니다.
+          리턴값이 0이면 함수호출 성공이며 나머지는 에러입니다.
+          주문성공여부는 OnReceiveTrData에서 주문번호가 있으면 주문성공, 공백이면 주문실패으로 판단하실수 있습니다.
+          코스피지수200 선물옵션 전용 주문함수입니다.
+          
+          [거래구분]
+          1 : 지정가
+          2 : 조건부지정가
+          3 : 시장가
+          4 : 최유리지정가
+          5 : 지정가(IOC)
+          6 : 지정가(FOK)
+          7 : 시장가(IOC)
+          8 : 시장가(FOK)
+          9 : 최유리지정가(IOC)
+          A : 최유리지정가(FOK)
+          장종료 후 시간외 주문은 지정가 선택
+          ]]>
+          </function>
+          <function type="funct" id="48" name="LONG SendOrderCredit(BSTR sRQName, BSTR sScreenNo, BSTR sAccNo, LONG nOrderType, BSTR sCode, LONG nQty, LONG nPrice, BSTR sHogaGb, BSTR sCreditGb, BSTR sLoanDate, BSTR sOrgOrderNo)" >
+          <![CDATA[
+          [SendOrderCredit() 함수]
+          
+          SendOrderCredit(
+          BSTR sRQName,   // 사용자 구분명
+          BSTR sScreenNo,   // 화면번호 
+          BSTR sAccNo,    // 계좌번호 10자리 
+          LONG nOrderType,    // 주문유형 1:신규매수, 2:신규매도 3:매수취소, 4:매도취소, 5:매수정정, 6:매도정정, SOR, NXT주문유형이 추가되었습니다.
+          BSTR sCode,   // 종목코드
+          LONG nQty,    // 주문수량
+          LONG nPrice,    // 주문가격
+          BSTR sHogaGb,   // 거래구분(혹은 호가구분)은 아래 참고
+          BSTR sCreditGb, // 신용거래구분 (아래에서 참고)
+          BSTR sLoanDate,   // 대출일 (YYYYMMDD. 아래에서 참고)
+          BSTR sOrgOrderNo    // 원주문번호
+          )
+          
+          서버에 주문을 전송하는 함수 입니다.
+          국내주식 신용주문 전용함수입니다. 대주거래는 지원하지 않습니다.
+          
+          ※ 주문유형 추가
+          대체거래소 주문을 위해 다음 유형이 추가되었습니다.
+          11 : SOR매수, 12 : SOR매도, 13 : SOR취소, 15 : SOR정정, 21 : NXT매수, 22 : NXT매도, 23 : NXT취소, 25 : NXT정정
+          
+          [거래구분]
+          00 : 지정가
+          03 : 시장가
+          05 : 조건부지정가
+          06 : 최유리지정가
+          07 : 최우선지정가
+          10 : 지정가IOC
+          13 : 시장가IOC
+          16 : 최유리IOC
+          20 : 지정가FOK
+          23 : 시장가FOK
+          26 : 최유리FOK
+          28 : 스탑지정가
+          29 : 중간가
+          61 : 장전시간외종가
+          62 : 시간외단일가매매
+          81 : 장후시간외종가
+          ※ 모의투자에서는 지정가 주문과 시장가 주문만 가능합니다.
+          
+          [신용거래]
+          신용거래 구분은 다음과 같습니다.
+          03 : 신용매수 - 자기융자
+          33 : 신용매도 - 자기융자
+          99 : 신용매도 - 자기융자 합
+          
+          [대출일]
+          YYYYMMDD형식 날짜를 입력합니다. (ex 대출일이 2023년 1월 1일이면 "20230101"입력)
+          신용매도 - 자기융자 일때는 종목별 대출일을 입력하고 신용매도 - 융자합이면 "99991231"을 입력합니다.
+          ]]>
+          </function>
+          <function type="funct" id="26" name="BSTR GetChejanData(long nFid)" >
+          <![CDATA[
+          [GetChejanData() 함수]
+          
+          GetChejanData(
+          long nFid   // 실시간 타입에 포함된 FID(Field ID)
+          )
+          
+          OnReceiveChejan()이벤트가 발생될때 FID에 해당되는 값을 구하는 함수입니다.
+          이 함수는 OnReceiveChejan() 이벤트 안에서 사용해야 합니다.
+          예) 체결가 = GetChejanData(910) 
+          ]]>
+          </function>
+          <function type="event" id="4" name="void OnReceiveChejanData(BSTR sGubun, LONG nItemCnt, BSTR sFIdList)" >
+          <![CDATA[
+          [OnReceiveChejanData() 이벤트]
+          
+          OnReceiveChejanData(
+          BSTR sGubun, // 체결구분. 접수와 체결시 '0'값, 국내주식 잔고변경은 '1'값, 파생잔고변경은 '4'
+          LONG nItemCnt,
+          BSTR sFIdList
+          )
+          
+          주문전송 후 주문접수, 체결통보, 잔고통보를 수신할 때 마다 발생됩니다.
+          GetChejanData()함수를 이용해서 FID항목별 값을 얻을수 있습니다.
+          ]]>
+          </function>
+          <function type="event" id="3" name="void OnReceiveMsg(BSTR sScrNo, BSTR sRQName, BSTR sTrCode, BSTR sMsg)" >
+          <![CDATA[
+          [OnReceiveMsg() 이벤트]
+          
+          OnReceiveMsg(
+          BSTR sScrNo,   // 화면번호
+          BSTR sRQName,  // 사용자 구분명
+          BSTR sTrCode,  // TR이름
+          BSTR sMsg     // 서버에서 전달하는 메시지
+          )
+          
+          서버통신 후 수신한 서버메시지를 알려줍니다.
+          데이터 조회시 입력값(Input)오류, 주문 전송시 주문거부 사유 등을 확인할 수 있습니다.
+          메시지에 포함된 6자리 코드번호는 변경될 수 있으니, 여기에 수신된 코드번호를 특정 용도로 사용하지 마시기 바랍니다.
+          예) "조회가 완료되었습니다" 
+          예) "계좌번호 입력을 확인해주세요" 
+          예) "조회할 자료가 없습니다." 
+          예) "증거금 부족으로 주문이 거부되었습니다."
+          ]]>
+          
+          </function>
+          <function type="event" id="1" name="void OnReceiveTrData(BSTR sScrNo, BSTR sRQName, BSTR sTrCode, BSTR sRecordName, BSTR sPrevNext, LONG nDataLength, BSTR sErrorCode, BSTR sMessage, BSTR sSplmMsg)" >
+          <![CDATA[
+          [OnReceiveTrData() 이벤트]
+          
+          void OnReceiveTrData(
+          BSTR sScrNo,       // 화면번호
+          BSTR sRQName,      // 사용자 구분명
+          BSTR sTrCode,      // TR이름
+          BSTR sRecordName,  // 레코드 이름
+          BSTR sPrevNext,    // 연속된 데이터 유무를 판단하는 값. 0: 연속(추가조회)데이터 없음, 2:연속(추가조회) 데이터 있음
+          LONG nDataLength,  // 사용안함.
+          BSTR sErrorCode,   // 사용안함.
+          BSTR sMessage,     // 사용안함.
+          BSTR sSplmMsg     // 사용안함.
+          )
+          
+          조회데이터를 수신했을때 발생됩니다.
+          또는 주문전송시 정상처리경우에 주문번호를 구할 수 있습니다.
+          수신된 데이터는 이 이벤트에서 GetCommData()함수를 이용해서 얻어올 수 있습니다.
+          ]]>
+          </function>
+        </subject>
+        <!-- // 우선 막아둔다.
+        <subject type="code" name="C++"><![CDATA[주문과 잔고처리 C++]]> </subject>
+      <subject type="code" name="C#"><![CDATA[주문과 잔고처리 C#]]> </subject>
+      <subject type="code" name="VB"><![CDATA[주문과 잔고처리 VB]]> </subject>
+      -->
+    </Content>
+    <Content name="조건검색">
+        <subject type="desc" name="기본설명"> <![CDATA[        
+        [조건검색 개요]
+        OpenAPI에서 제공하는 조건검색 기능은 영웅문4 HTS에서 작성/저장된 조건식을 불러와 사용하는 방식입니다.
+        조건검색 수식작성이나 조건식 편집 및 저장은 OpenAPI에서 지원하지 않습니다.
+        영웅문4 HTS를 통해 편집/저장된 사용자 조건식만 사용 가능합니다.
+        
+        조건검색 전용 함수와 이벤트가 제공됩니다.
+        이를 이용해서 조건검색과 실시간 조건검색을 사용할 수 있습니다.
+        ※ 조건검색 요청을 반복하는 방법이 아닌, 실시간 조건검색 사용을 권장합니다.
+        ※ 서버에서 실시간조건검색 준비가 완료되는 시점은 07:30 입니다. 
+                SendCondition 조건검색 요청은 07:30 이후에 사용해주시기 바랍니다.
+        ※ 실시간으로 편입되는 종목이 순간적으로 편입/이탈을 반복하는 경우, 서버에따라 결과가 일시적으로 HTS 등과 다를 수 있습니다.
+
+        
+        [조건검색 사용법]
+        접속(로그인) 후 GetConditionLoad() 함수를 호출하여 영웅문4를 통해 
+        서버에 저장되어 있는 '내조건식' 들을 요청합니다.
+        이에대한 응답으로 OnReceiveConditionVer() 이벤트가 발생합니다.
+        OnReceiveConditionVer() 이벤트 안에서 GetConditionNameList() 함수를 사용하여
+        '내조건식' 리스트를 얻습니다.
+		
+        이중 원하는 조건식으로 조건검색 요청 함수 SendCondition() 를 호출합니다.
+        이에대한 서버의 응답은 OnReceiveTrCondition() 이벤트로 수신됩니다.
+        실시간 옵션으로 요청한 경우 해당 조건식에 실시간으로 편입/이탈 되는 종목은
+        OnReceiveRealCondition() 이벤트로 수신됩니다.
+		
+        ※ GetConditionNameList 로 구한 조건식 이름과 조건식의 고유 번호를 
+            SendCondition 함수 사용시 정확하게 입력해야 합니다.
+			
+        GetConditionLoad (사용자 호출) -> OnReceiveConditionVer (이벤트 발생) -> GetConditionNameList (사용자 호출)
+          -> SendCondition (사용자 호출) -> OnReceiveTrCondition (이벤트 발생) -> OnReceiveRealCondition (이벤트 발생)
+
+
+        [조건검색 제한]
+        조건검색 요청은 1초당 5회 조회횟수 제한에 포함됩니다.
+        동일 조건식에 대한 조건검색 요청은 1분에 1회로 제한됩니다.
+        조건검색 결과가 100종목을 넘게 되면 해당조건은 실시간 조건검색 신호를 수신할 수 없습니다.
+        실시간 조건검색은 최대 10개까지 사용 가능합니다.
+        ※ 조건검색 제한에대한 자세한 내용은 하단에 추가합니다.
+
+
+        10개 조건검색식을 한번에 모두 조회하는 프로그램이 있으며 조건검색만 요청한다고 가정해서 설명하면 다음과 같습니다.
+        
+        ------------------------------------------------------------------------------------------------------------------------------------
+        
+        첫번째 제한조건 : 1초에 5회만 조회가능
+        두번째 제한조건 : 조건별 1분당 1회로 제한(실시간 조건검색 수신에는 영향없음)
+        
+        09:00:00  조회 시작
+        1번부터 5번 조건식은 조회성공(첫번째 제한조건, 두번째 제한조건 모두 만족)
+        6번부터 10번 조건식은 조회실패(첫번째 제한조건)
+        
+        09:00:01 조회 재시작(1초후 재조회)
+        1번부터 5번 조건식은 조회실패(두번째 제한조건)
+        6번부터 10번 조건식은 조회성공(첫번째 제한조건, 두번째 제한조건 모두 만족)
+        ... ... ...
+        
+        09:01:00 조회시작 (첫조회 1분후)
+        1번부터 5번 조건식은 조회성공(첫번째 제한조건, 두번째 제한조건 모두 만족)
+        6번부터 10번 조건식은 조회실패(첫번째 제한조건)
+        
+        09:00:01 조회 재시작(1분 1초후 재조회)
+        1번부터 5번 조건식은 조회실패(두번째 제한조건)
+        6번부터 10번 조건식은 조회성공(첫번째 제한조건, 두번째 제한조건 모두 만족)
+        
+        ------------------------------------------------------------------------------------------------------------------------------------
+        
+        
+        ]]> </subject>
+        <subject name="관련함수" type="function decs" >
+          <function type="funct" id="52" name="long GetConditionLoad()" >
+          <![CDATA[
+          [GetConditionLoad() 함수]
+          
+          서버에 저장된 사용자 조건검색 목록을 요청합니다. 
+          조건검색 목록을 모두 수신하면 OnReceiveConditionVer()이벤트가 발생됩니다.
+          조건검색 목록 요청을 성공하면 1, 아니면 0을 리턴합니다.
+          ]]>
+          </function>
+          <function type="funct" id="53" name="BSTR GetConditionNameList()" >
+          <![CDATA[
+          [GetConditionNameList() 함수]
+          
+          서버에서 수신한 사용자 조건식을 조건식의 고유번호와 조건식 이름을 한 쌍으로 하는 문자열들로 전달합니다.
+          조건식 하나는 조건식의 고유번호와 조건식 이름이 구분자 '^'로 나뉘어져 있으며 각 조건식은 ';'로 나뉘어져 있습니다.
+          이 함수는 OnReceiveConditionVer()이벤트에서 사용해야 합니다.
+		  
+          예) "1^내조건식1;2^내조건식2;5^내조건식3;,,,,,,,,,,"
+          ]]>
+          </function>
+          <function type="funct" id="54" name="long SendCondition(BSTR strScrNo, BSTR strConditionName, int nIndex, int nSearch)" >
+          <![CDATA[
+          [SendCondition() 함수]
+          
+          SendCondition(
+          BSTR strScrNo,    // 화면번호
+          BSTR strConditionName,  // 조건식 이름
+          int nIndex,     // 조건식 고유번호
+          int nSearch   // 실시간옵션. 0:조건검색만, 1:조건검색+실시간 조건검색
+          )
+          
+          서버에 조건검색을 요청하는 함수입니다.
+          마지막 인자값으로 조건검색만 할것인지 실시간 조건검색도 수신할 것인지를 지정할 수 있습니다.
+          GetConditionNameList()함수로 얻은 조건식 이름과 고유번호의 쌍을 맞춰서 사용해야 합니다.
+          리턴값 1이면 성공이며, 0이면 실패입니다.
+          요청한 조건식이 없거나 조건 고유번호와 조건명이 서로 안맞거나 조회횟수를 초과하는 경우 실패하게 됩니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          [조건검색 사용예시]
+          GetConditionNameList()함수로 얻은 조건식 목록이 "0^조건식1;3^조건식1;8^조건식3;23^조건식5"일때 조건식3을 검색
+          
+          long lRet = SendCondition("0156", "조건식3", 8, 1);
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+          <function type="funct" id="55" name="void SendConditionStop(BSTR strScrNo, BSTR strConditionName, int nIndex)" >
+          <![CDATA[
+          [SendConditionStop() 함수]
+          
+          SendConditionStop(
+          BSTR strScrNo,    // 화면번호
+          BSTR strConditionName,    // 조건식 이름 
+          int nIndex    // 조건식 고유번호
+          )
+          
+          실시간 조건검색을 중지할 때 사용하는 함수입니다.
+          조건식 조회할때 얻는 조건식 이름과 고유번호의 쌍을 맞춰서 사용해야 합니다.
+          
+          ]]>
+          </function>
+          <function type="funct" id="51" name="LONG SetRealReg(BSTR strScreenNo, BSTR strCodeList, BSTR strFidList, BSTR strOptType)" >
+          <![CDATA[
+          [SetRealReg() 함수]
+          
+          SetRealReg(
+          BSTR strScreenNo,   // 화면번호
+          BSTR strCodeList,   // 종목코드 리스트
+          BSTR strFidList,  // 실시간 FID리스트
+          BSTR strOptType   // 실시간 등록 타입, 0또는 1
+          )
+          
+          종목코드와 FID 리스트를 이용해서 실시간 시세를 등록하는 함수입니다.
+          한번에 등록가능한 종목과 FID갯수는 100종목, 100개 입니다.
+          실시간 등록타입을 0으로 설정하면 등록한 종목들은 실시간 해지되고 등록한 종목만 실시간 시세가 등록됩니다.
+          실시간 등록타입을 1로 설정하면 먼저 등록한 종목들과 함께 실시간 시세가 등록됩니다
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          [실시간 시세등록 예시]
+          OpenAPI.SetRealReg(_T("0150"), _T("039490"), _T("9001;302;10;11;25;12;13"), "0");  // 039490종목만 실시간 등록
+          OpenAPI.SetRealReg(_T("0150"), _T("000660"), _T("9001;302;10;11;25;12;13"), "1");  // 000660 종목을 실시간 추가등록
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+          <function type="funct" id="57" name="void SetRealRemove(BSTR strScrNo, BSTR strDelCode)" >
+          <![CDATA[
+          [SetRealRemove() 함수]
+          
+          SetRealRemove(
+          BSTR strScrNo,    // 화면번호 또는 ALL
+          BSTR strDelCode   // 종목코드 또는 ALL
+          )
+          
+          실시간시세 해지 함수이며 화면번호와 종목코드를 이용해서 상세하게 설정할 수 있습니다.
+          ※ A종목에 대한 실시간이 여러화면번호로 중복등록되어 있는 경우 특정화면번호를 이용한
+                  SetRealRemove() 함수호출시 A종목의 실시간시세는 해지되지 않습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          [실시간 시세해지 예시]
+          OpenAPI.SetRealRemove("0150", "039490");  // "0150"화면에서 "039490"종목 실시간 해지
+          OpenAPI.SetRealRemove("ALL", "ALL");  // 모든 화면에서 모든종목 실시간 해지
+          OpenAPI.SetRealRemove("0150", "ALL");  // "0150"화면에서 모든종목 실시간 해지
+          OpenAPI.SetRealRemove("ALL", "039490");  // 모든 화면에서 "039490"종목 실시간 해지
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+          <function type="event" id="9" name="void OnReceiveConditionVer(LONG lRet, BSTR sMsg)" >
+          <![CDATA[
+          [OnReceiveConditionVer() 이벤트]
+          
+          OnReceiveConditionVer(
+          LONG lRet, // 호출 성공여부, 1: 성공, 나머지 실패
+          BSTR sMsg  // 호출결과 메시지
+          )
+          
+          저장된 사용자 조건식 불러오기 요청에 대한 응답 수신시 발생되는 이벤트입니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          [사용자 조건식 호출결과 수신예시]
+          OnReceiveConditionVer(long lRet, LPCTSTR sMsg)
+          {
+              if(lRet != 0) return;
+              
+              CString		strCondList(m_KOA.GetConditionNameList());
+              CString		strOneCond, strItemID, strCondName;
+              while(AfxExtractSubString(strOneCond, strCondList, nIndex++, _T(';')))  // 조건식을 하나씩 분리한다.
+              {
+                  if(strOneCond.IsEmpty())	continue;
+                  AfxExtractSubString(strItemID	, strOneCond, 0, _T('^'));  // 고유번호를 분리한다.
+                  AfxExtractSubString(strCondName	, strOneCond, 1, _T('^'));  // 조건식 이름을 분리한다.
+              }
+          }
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          ]]>
+          </function>
+          <function type="event" id="8" name="void OnReceiveTrCondition(BSTR sScrNo, BSTR strCodeList, BSTR strConditionName, int nIndex, int nNext)" >
+          <![CDATA[
+          [OnReceiveTrCondition() 이벤트]
+          
+          OnReceiveTrCondition(
+          BSTR sScrNo,    // 화면번호
+          BSTR strCodeList,   // 종목코드 리스트
+          BSTR strConditionName,    // 조건식 이름
+          int nIndex,   // 조건 고유번호
+          int nNext   // 연속조회 여부
+          )
+          
+          조건검색 요청에대한 서버 응답 수신시 발생하는 이벤트입니다. 
+          종목코드 리스트는 각 종목코드가 ';'로 구분되서 전달됩니다.
+		  
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          [조건검색 결과 수신예시]
+          OnReceiveTrCondition(LPCTSTR sScrNo,LPCTSTR strCodeList, LPCTSTR strConditionName, int nIndex, int nNext)
+          {
+              if(strCodeList == "") return;
+              CString strCode, strCodeName;
+              int   nIdx = 0;
+              while(AfxExtractSubString(strCode, strCodeList, nIdx++, _T(';')))// 하나씩 종목코드를 분리
+              {
+                  if(strCode == _T("")) continue;
+                  strCodeName = OpenAPI.GetMasterCodeName(strCode); // 종목명을 가져온다.
+              }
+          }
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+          <function type="event" id="7" name="void OnReceiveRealCondition(BSTR strCode, BSTR strType, BSTR strConditionName, BSTR strConditionIndex)" >
+          <![CDATA[
+          [OnReceiveRealCondition() 이벤트]
+          
+          OnReceiveRealCondition(
+          BSTR strCode,   // 종목코드
+          BSTR strType,   //  이벤트 종류, "I":종목편입, "D", 종목이탈
+          BSTR strConditionName,    // 조건식 이름 
+          BSTR strConditionIndex    // 조건식 고유번호
+          )
+          
+          실시간 조건검색 요청으로 신규종목이 편입되거나 기존 종목이 이탈될때 마다 발생됩니다.
+          ※ 편입되었다가 순간적으로 다시 이탈되는 종목에대한 신호는 조건검색 서버마다 차이가 발생할 수 있습니다.
+
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          [실시간 조건검색 수신예시]
+          OnReceiveRealCondition(LPCTSTR sCode, LPCTSTR sType, LPCTSTR strConditionName, LPCTSTR strConditionIndex)
+          {
+              CString strCode(sCode), strCodeName;
+              int   nIdx = 0;
+              CString strType(sType);
+              if(strType == _T("I"))// 종목편입
+              {
+                strCodeName = OpenAPI.GetMasterCodeName(strCode); // 종목명을 가져온다.
+                long lRet = OpenAPI.SetRealReg(strSavedScreenNo, strCode, _T("9001;302;10;11;25;12;13"), "1");// 실시간 시세등록
+              }
+              else if(strType == _T("D")) // 종목이탈
+              {
+                OpenAPI.SetRealRemove(strSavedScreenNo, strCode);// 실시간 시세해지
+              }
+          }
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          ]]>
+          </function>
+        </subject>
+        <!-- // 우선 막아둔다.
+        <subject type="code" name="C++"><![CDATA[조건검색 C++]]> </subject>
+      <subject type="code" name="C#"><![CDATA[조건검색 C#]]> </subject>
+      <subject type="code" name="VB"><![CDATA[조건검색 VB]]> </subject>
+      -->
+    </Content>
+    <Content name="기타함수">
+      <subject type="function decs" name="종목정보관련 함수">
+        <function type="funct" id="14" name="BSTR GetCodeListByMarket(BSTR sMarket)" >
+          <![CDATA[
+          [GetCodeListByMarket() 함수]
+          
+          GetCodeListByMarket(
+          BSTR sMarket    // 시장구분값
+          )
+          
+          주식 시장별 종목코드 리스트를 ';'로 구분해서 전달합니다. 
+          시장구분값을 ""공백으로하면 전체시장 코드리스트를 전달합니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          
+          [시장구분값]
+          0 : 코스피
+          10 : 코스닥
+          3 : ELW
+          8 : ETF
+          50 : KONEX
+          4 :  뮤추얼펀드
+          5 : 신주인수권
+          6 : 리츠
+          9 : 하이얼펀드
+          30 : K-OTC
+          NXT : NXT종목
+          ]]>
+          </function>
+        <function type="funct" id="16" name="BSTR GetMasterCodeName(BSTR strCode)" >
+          <![CDATA[
+          [GetMasterCodeName() 함수]
+          
+          GetMasterCodeName(
+          BSTR strCode    // 종목코드
+          )
+          
+          종목코드에 해당하는 종목명을 전달합니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          ]]>
+          </function>
+        <function type="funct" id="17" name="LONG GetMasterListedStockCnt(BSTR strCode)" >
+          <![CDATA[
+          [GetMasterListedStockCnt() 함수]
+          
+          GetMasterListedStockCnt(
+          BSTR strCode  // 종목코드
+          )
+          
+          입력한 종목코드에 해당하는 종목 상장주식수를 전달합니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          ]]>
+          </function>
+        <function type="funct" id="18" name="BSTR GetMasterConstruction(BSTR strCode)" >
+          <![CDATA[
+          [GetMasterConstruction() 함수]
+          
+          GetMasterConstruction(
+          BSTR strCode  // 종목코드
+          }
+          
+          입력한 종목코드에 해당하는 종목의 감리구분을 전달합니다.
+          (정상, 투자주의, 투자경고, 투자위험, 투자주의환기종목)
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          ]]>
+          </function>
+        <function type="funct" id="19" name="BSTR GetMasterListedStockDate(BSTR strCode)" >
+          <![CDATA[
+          [GetMasterListedStockDate() 함수]
+          
+          GetMasterListedStockDate(
+          BSTR strCode    // 종목코드
+          )
+          
+          입력한 종목의 상장일을 전달합니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          
+          ]]>
+          </function>
+        <function type="funct" id="20" name="BSTR GetMasterLastPrice(BSTR strCode)" >
+          <![CDATA[
+          [GetMasterLastPrice() 함수]
+          
+          GetMasterLastPrice(
+          BSTR strCode    // 종목코드
+          )
+          
+          입력한 종목의 당일 기준가를 전달합니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          ]]>
+          </function>
+        <function type="funct" id="21" name="BSTR GetMasterStockState(BSTR strCode)" >
+          <![CDATA[
+          [GetMasterStockState() 함수]
+          
+          GetMasterStockState(
+          BSTR strCode  // 종목코드
+          )
+          
+          입력한 종목의 증거금 비율, 거래정지, 관리종목, 감리종목, 투자융의종목, 담보대출, 액면분할, 신용가능 여부를 전달합니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          ]]>
+          </function>
+		  <function type="funct" id="22" name="BSTR GetBranchCodeName()" >
+          <![CDATA[
+          [GetBranchCodeName() 함수]
+                  
+          특정TR 조회에 필요한 회원사 정보를 회원사 코드와 회원사 이름으로 구성해서 전달합니다.
+          각 회원사 정보는 구분자 ';'로 분리되어 있으며 한 회원사 정보에는 구분자 '|'로 회원사 코드와 회원사 이름을 분리합니다.
+          전체적인 회원사 구성과 함수에서 전달받은 회원사 정보는 다음과 같습니다.
+          
+          "회원사코드0|회원사이름0;회원사코드1|회원사이름1;...회원사코드n|회원사이름n;"
+          예) 001|교  보;002|신한금융투자;003|한국투자증권;...;827|모아증권중개;829|동양오리온
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          ]]>
+          </function>
+        <function type="funct" id="29" name="BSTR GetFutureList()" >
+          <![CDATA[
+          [GetFutureList() 함수]
+          
+          지수선물 종목코드 리스트를 ';'로 구분해서 전달합니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          ]]>
+          </function>
+          <!-- 이 함수는 잘못 만들어졌다.
+        <function type="funct" id="30" name="BSTR GetFutureCodeByIndex(int nIndex)" >
+          <![CDATA[
+          [GetFutureCodeByIndex() 함수]
+          
+          GetFutureCodeByIndex(
+          int nIndex  // 인덱스 0 ~ 
+          )
+          
+          인덱스로 지정한 지수선물 코드를 반환합니다.
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          ]]>
+          </function>
+          -->
+        <function type="funct" id="31" name="BSTR GetActPriceList()" >
+          <![CDATA[
+          [GetActPriceList() 함수]
+          
+          지수옵션 행사가에 100을 곱해서 소수점이 없는 값을 ';'로 구분해서 전달합니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          [지수옵션 행사가 사용예시]
+          CString strActPriceList(OpenAPI.GetActPriceList());
+          "19000;19250;19500;19750;20000;20250;20500;20750;21000;21250;21500;21750;..."
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+          
+        <function type="funct" id="32" name="BSTR GetMonthList()" >
+          <![CDATA[
+          [GetMonthList() 함수]
+          
+          지수옵션 월물정보를 ';'로 구분해서 전달하는데 순서는 콜 11월물 ~ 콜 최근월물 풋 최근월물 ~ 풋 최근월물가 됩니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          [지수옵션 월물조회 사용예시]
+          CString strMonthList(OpenAPI.GetMonthList());
+          "201812;201806;201712;201706;201703;201612;201611;201610;201609;201608;201607;..."
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+        <function type="funct" id="33" name="BSTR GetOptionCode(BSTR strActPrice, int nCp, BSTR strMonth)" >
+          <![CDATA[
+          [GetOptionCode() 함수]
+          
+          GetOptionCode(
+          BSTR strActPrice,   // 소수점을 포함한 행사가
+          int nCp,    // 콜풋구분값, 콜:2, 풋:3
+          BSTR strMonth   // 6자리 월물
+          )
+          
+          인자로 지정한 지수옵션 코드를 전달합니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          [지수옵션 코드 사용예시]
+          
+          CString strOptCode = OpenAPI.GetOptionCode(_T("247.50"), 2, _T("201607"));
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+        <function type="funct" id="35" name="BSTR GetOptionCodeByActPrice(BSTR strCode, int nCp, int nTick)" >
+          <![CDATA[
+          [GetOptionCodeByActPrice() 함수]
+          
+          GetOptionCodeByActPrice(
+          BSTR strCode,   // 기준이 되는 종목코드
+          int nCp,    // 콜풋구분값, 콜:2, 풋:3
+          int nTick  // 기준종목의 n틱 (0값 제외)
+          )
+          
+          옵션전용 함수. 인자로 지정한 지수옵션 종목의 n틱 차이에 해당되는 종목코드를 전달합니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          [지수옵션 코드 사용예시]
+          
+          CString strOptCode = OpenAPI.GetOptionCodeByActPrice("201S8327", 2, 5);
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+          <function type="funct" id="44" name="BSTR GetOptionATM()" >
+          <![CDATA[
+          [GetOptionATM() 함수]
+          
+          지수옵션 소수점을 제거한 ATM값을 전달합니다. 
+          예를들어 ATM값이 247.50 인 경우 24750이 전달됩니다.
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          ]]>
+          </function>
+          <function type="funct" id="36" name="BSTR GetSFutureList(LPCTSTR strBaseAssetGb)" >
+          <![CDATA[
+          [GetSFutureList() 함수]
+          
+          GetSFutureList(
+          BSTR strBaseAssetGb,   // 기초자산 구분값
+          )
+          
+          기초자산 구분값을 인자로 받아서 주식선물 종목코드, 종목명, 기초자산이름을 구할수 있습니다.
+          입력값을 공백으로 하면 주식선물 전체 종목코드를 얻을 수 있습니다.
+          전달되는 데이터 형식은 다음과 같습니다.
+         "종목코드1^종목명1^기초자산이름1;종목코드2^종목명2^기초자산이름2;...;종목코드n^종목명n^기초자산이름n;"
+          
+          로그인 한 후에 사용할 수 있는 함수입니다.
+          ]]>
+          </function>
+      </subject>
+      <subject type="function decs" name="특수함수">
+        <function type="funct" id="49" name="BSTR KOA_Functions(BSTR sFunctionName, BSTR sParam))" >
+          <![CDATA[
+          [KOA_Functions() 함수]
+          
+          KOA_Functions(
+          BSTR sFunctionName,   // 함수이름 혹은 기능이름
+          BSTR sParam   // 함수 매개변수
+          ))
+          
+          KOA_Function() 함수는 OpenAPI기본 기능외에 기능을 사용하기 쉽도록 만든 함수입니다.
+          두 개의 인자값을 사용합니다. 
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          [KOA_Functions() 함수 사용예시]
+          
+          1. 계좌비밀번호 입력창 출력
+          OpenAPI.KOA_Functions(_T("ShowAccountWindow"), _T(""));// 계좌비밀번호 입력창을 출력한다.
+          
+		  
+          2. 접속서버확인
+          OpenAPI.KOA_Functions(_T("GetServerGubun"), _T(""));// 접속서버 구분을 알려준다. 1 : 모의투자 접속, 나머지 : 실서버 접속 
+          
+		  
+          3. 주식종목 시장구분, 종목분류등 정보제공 
+          OpenAPI.KOA_Functions(_T("GetMasterStockInfo"), _T("039490"));
+          호출결과는 입력한 종목에 대한 대분류, 중분류, 업종구분값을 구분자로 연결한 문자열입니다.
+          구분자는 '|'와 ';'입니다.
+          예)
+          OpenAPI.KOA_Functions("GetMasterStockInfo", "039490")을 호출하면 
+          시장구분0|코스피;시장구분1|중형주;업종구분|금융업; 이렇게 결과를 얻을 수 있습니다. 
+          
+		  
+          4. 조검검색 종목코드와 현재가 수신(실시간 조건검색은 사용할수 없음)
+          조건검색결과에 종목코드와 그 종목의 현재가를 함께 수신하는 방법이며 실시간 조건검색에서는 사용할 수 없고 오직 조건검색에만 사용할수 있습니다.
+          OpenAPI.KOA_Functions(_T("SetConditionSearchFlag"), _T("AddPrice")); // 현재가 포함하도록 설정 
+          현재가 포함으로 설정시 OnReceiveTrCondition()이벤트에 "종목코드1^현재가1;종목코드2^현재가2;...종목코드n^현재가n"형식으로 전달됨
+          
+          OpenAPI.KOA_Functions(_T("SetConditionSearchFlag"), _T("DelPrice")); // 현재가 미포함 (원래상태로 전환)
+          현재가 미포함시 기존처럼 "종목코드1^종목코드2...종목코드n" 형식으로 전달므로 설정에 따라 수신데이터 처리방법이 달라져야 하므로 주의하셔야 합니다
+          이 방법은 실시간 조건검색에서는 사용할 수 없고 수신데이터에 현재가가 포함되므로 데이터처리방법을 달리해야 합니다
+          
+		  
+          5. 업종코드목록 획득
+          OpenAPI.KOA_Functions(_T("GetUpjongCode"), _T("0")); // 업종코드요청
+          두 번째 인자로 사용할 수 있는 값은 0,1,2,4,7 입니다.
+          0:코스피, 1: 코스닥, 2:KOSPI200, 4:KOSPI100(KOSPI50), 7:KRX100
+          함수반환값은 "시장구분값,업종코드,업종명|시장구분값,업종코드,업종명|...|시장구분값,업종코드,업종명" 형식입니다.
+          즉 하나의 업종코드는 입력한 시장구분값과 업종코드 그리고 그 업종명이 쉼표(,)로 구분되며 각 업종코드는 '|'로 구분됩니다.
+
+
+          6. 업종이름 획득
+          OpenAPI.KOA_Functions(_T("GetUpjongNameByCode"), _T("업종코드입력"));
+
+
+          7. ETF 투자유의 종목 여부 (2020/9/17 적용)
+          거래소 제도개선으로 ETF/ETN 종목 중 투자유의 종목을 매수주문하는 경우 경고 메세지 창이 출력되도록 기능이 추가 되었습니다.
+          (경고 창 출력 시 주문을 중지/전송 선택 가능합니다.)
+          주문 함수를 호출하기 전에 특정 종목이 투자유의종목인지 아래와 같은 방법으로 확인할 수 있습니다.
+		  
+          KOA_Functions("IsOrderWarningETF", "종목코드(6자리)")
+          투자유의 종목인 경우 "1" 값이 리턴, 그렇지 않은 경우 "0" 값 리턴. (ETF가 아닌 종목을 입력시 "0" 값 리턴.)
+
+
+          8. 주식 전종목대상 투자유의 종목 여부 (2020/11/26 적용)
+          거래소 제도개선으로 주식 종목 중 정리매매/단기과열/투자위험/투자경고 종목을 매수주문하는 경우
+          경고 메세지 창이 출력되도록 기능이 추가 되었습니다.
+          (경고 창 출력 시 주문을 중지/전송 선택 가능합니다.)
+          주문 함수를 호출하기 전에 특정 종목이 투자유의종목인지 아래와 같은 방법으로 확인할 수 있습니다.
+
+          KOA_Functions("IsOrderWarningStock", "종목코드(6자리)")
+          리턴 값 - "0":해당없음, "2":정리매매, "3":단기과열, "4":투자위험, "5":투자경고 
+
+
+          9. 상장주식수 구하기 (2021/4/8 적용)
+          상장주식수를 구하는 GetMasterListedStockCnt 기존 함수 사용시 특정 종목 데이터가 long형을 Overflow 하는 현상이 있습니다.
+          이에, 상장주식수를 구하는 기능을 신규 추가 합니다. 사용법은 아래와 같습니다.
+		  
+          KOA_Functions("GetMasterListedStockCntEx", "종목코드(6자리)")
+		  
+		  
+          10. 종목코드로 Market구분 구하기 (2022/3/3 적용)
+          종목코드 입력으로 해당 종목이 어느 시장에 포함되어 있는지 구하는 기능
+          서버와의 통신없이 메모리에 상주하는 값을 사용하므로 횟수제한 등은 없습니다. 사용법은 아래와 같습니다.
+		  
+          KOA_Functions("GetStockMarketKind", "종목코드6자리");
+          리턴값은 문자형으로 아래와 같습니다.
+           "0":코스피, "10":코스닥, "3":ELW, "8":ETF, "4"/"14":뮤추얼펀드, "6"/"16":리츠, "9"/"19":하이일드펀드, "30":제3시장, "60":ETN
+
+
+          11. 테마그룹리스트
+          전체 테마코드와 테마명을 코드순(0), 테마순(1)으로 구하는 기능
+          리턴값은 문자열이며 테마코드와 테마명은 '|'으로 각 테마는 ';'으로 구분한다.
+          
+          KOA_Functions("GetThemeGroupList", "0");// 코드순으로 테마코드와 테마명을 구함
+          "100|태양광_폴리실리콘;101|태양광_잉곳/웨이퍼/셀/모듈; ~ 910|중국_내수소비 확대;920|코스닥_라이징스타"
+		  
+          KOA_Functions("GetThemeGroupList", "1");// 테마순으로 테마코드와 테마명을 구함
+          "141|2차전지_소재(양극화물질등);140|2차전지_완제품; ~ 512|휴대폰_터치스크린;173|희소금속"
+
+
+          12. 테마그룹 구성종목
+          테마그룹리스트에서 구한 테마코드로 테마그룹별 구성종목코드를 구한다.
+          리턴값은 문자열이며 종목코드 6자리 앞에 A는 장내주식, J는 ELW종목, Q는 ETN종목을 의미한다.
+          각 종목코드는 ';'으로 구분한다.
+		  
+          KOA_Functions("GetThemeGroupCode", "100");// 태양광_폴리실리콘 테마 구성종목을 구함
+          "A010060;A004000;A009830;A052420"
+
+
+          13. 현금 주문함수 - 스톱 지정가 추가
+          스톱 지정가로 현금 주문하실때 사용하는 함수입니다.
+          기존 현금 주문기능과 스톱 지정가 주문도 가능한 함수입니다.
+
+          함수 인자
+          11개 인자가 있으며 SendOrder()함수 9개 인자 뒤에 스탑 지정가격과 예약인자(공백입력)를 추가한 형태입니다.
+          각 인자는 쉼표로 구분해서 설정합니다.
+          리턴값은 문자열이며 "0"이면 호출 성공 이외에는 주문함수 호출 실패입니다.
+
+          // 현금주문 인자 설명
+          // 기존 주문함수에 "스탑지정가격", "예약인자" 추가, 총 11개 각 인자는 ','로 분리해서 설정
+          strParam.Format(_T("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s")
+          , sRQName		// 사용자 구분명
+          , sScreenNo	// 화면번호
+          , sAccNo		// 계좌번호 10자리
+          , sOrderType	// 주문유형
+          , sCode		// 종목코드 (6자리)
+          , sQty		// 주문수량
+          , sPrice		// 주문가격
+          , sHogaGb		// 거래구분 (혹은 호가구분) 스탑지정가 주문시 "28" 설정
+          , sOrgOrderNo	// 원주문번호
+          , sCondPrice	// 스톱가
+          , sReserve	// 예약인자(공백입력)
+          );
+
+
+          // "039490"종목, 현금 NXT매수(21), 주문가격(115800), 스톱가(115000) 스톱지정가 주문 인자 설정
+          strParam.Format(_T("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s")
+          , "현금주문"
+          , "4989"
+          , "1111222210"
+          , "21"
+          , "039490"
+          , "1"
+          , "115800"
+          , "28"		// 거래구분, 스톱지정가(28)
+          , ""
+          , "115000"		// 스톱가
+          , ""
+          );
+
+          // 새 현금 주문함수 호출, "0"이면 호출 성공 이외에는 호출실패
+          strRet = KOA_Functions(_T("SendOrder_Ex"), strParam);
+          
+          // 소문자 주문명 호출
+          strRet = KOA_Functions(_T("sendorder_ex"), strParam);
+
+          14. 신용주문 함수 - 스톱 지정가 추가
+          스톱 지정가로 신용주문 하실때 사용하는 함수입니다.
+          기존 신용주문과 스톱 지정가 주문도 가능한 함수입니다.
+
+          함수 인자
+          13개 인자가 있으며 SendOrderCredit()함수 11개 인자뒤에 스탑지정 가격과 예약인자(공백입력)를 추가한 형태입니다.
+          각 인자는 쉼표로 구분해서 설정합니다.
+          리턴값은 문자열이며 "0"이면 호출 성공 이외에는 주문함수 호출 실패입니다.
+
+
+          // 신용주문 인자 설명
+          // 기존 주문함수에 "스탑지정가격", "예약인자" 추가, 총 13개 각 인자는 ','로 분리해서 설정
+          strParam.Format(_T("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s")
+          , sRQName		// 사용자 구분명
+          , sScreenNo 	// 화면번호
+          , sAccNo		// 계좌번호 10자리
+          , sOrderType	// 주문유형
+          , sCode		// 종목코드 (6자리)
+          , sQty		// 주문수량
+          , sPrice		// 주문가격
+          , sHogaGb		// 거래구분 (혹은 호가구분) 스탑지정가 주문시 "28" 설정
+          , sCreditGb       // 신용거래구분
+          , sLoanDate       // 대출일 (YYYYMMDD형식.)
+          , sOrgOrderNo     // 원주문번호
+          , sCondPrice      // 스톱가
+          , sReserve        // 예약인자(공백입력)
+          );
+
+
+          // "039490"종목, 신용(03) NXT매수(21), 주문가격(115800), 스톱가(115000) 스톱지정가 주문 인자 설정
+          strParam.Format(_T("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s")
+          , "신용주문"
+          , "0334"
+          , "1111222210"
+          , "21"
+          , "039490"
+          , "1"
+          , "115800"
+          , "28"	// 거래구분, 스톱지정가(28)
+          , "03"
+          , ""
+          , ""
+          , "115000"	// 스톱가
+          , ""
+          );
+          
+          // 새 신용 주문함수 호출, "0"이면 호출 성공 이외에는 호출 실패
+          strRet = KOA_Functions(_T("SendOrderCredit_Ex"), strParam);
+          
+          // 소문자 주문명 호출
+          strRet = KOA_Functions(_T("sendordercredit_ex"), strParam);
+
+
+          ------------------------------------------------------------------------------------------------------------------------------------
+          ]]>
+          </function>
+      </subject>
+    </Content>
+    <Content name="OpenAPI 사용제한">
+      <subject name="기본설명" type="desc">
+          <![CDATA[
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          OpenAPI는 안정적인 서비스 운영을 위해 몇가지 제한을 두고 있습니다.
+          이는 과도하게 반복적으로 데이터를 요청하는 등 특정 사용자에의해 서버가 점유되면서, 
+          그렇지 않은 다수의 사용자가 이에 악영향을 받을 수 있는 점을 방지하기 위함입니다.
+          프로그램 구현시에 주의해주시기 바랍니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+		  
+          [실행환경]
+          OpenAPI는 서버급 OS를 지원하지 않습니다.
+          또한, 한글외 타언어 OS에서 구동시 정상적으로 동작하지 않을 수 있습니다.
+
+
+          [개발환경]
+          OpenAPI는 64비트용으로 제공되지 않습니다.
+          Visual Studio 2022, 64비트 MS Office 군의 엑셀에서는 OpenAPI 컨트롤 사용이 불가 합니다.
+
+
+          [접속제한]
+          서버점검시간은 매일 05:00 에 시작되며 보통 1분, 길어지면 5분정도 소요됩니다.
+          이 시간에는 접속자체가 불가하며 이전에 접속되어 있는 경우 접속이 단절됩니다.
+          조건검색 조회는 07:30 부터 가능합니다.
+          따라서 07:30 이후에 OpenAPI 접속하시길 권장 드립니다.
+		  
+          주말 시스템 작업시 접속이 불가한 경우가 있습니다.
+          주말 접속이 되지 않는 경우 OpenAPI게시판 공지 또는 고객게시판 공지를 확인해보시기 바랍니다.
+
+
+          [조회횟수 제한]
+          데이터 조회는 1초당 5회로 제한됩니다.
+          CommRqData(연속조회를 포함한 데이터 조회요청), SendCondition(조건검색 조회요청), CommKwRqData(복수종목 조회요청) 들이 해당됩니다.
+          1초당 5회를 초과하는 데이터요청에대해서는 에러코드가 리턴됩니다.
+          재실행/재접속 없이 1초 후 자동으로 해제됩니다.
+      
+	  
+          [서버부하방지 제한]
+          기존 1초당 5회 조회횟수 제한과 별개로 "서버부하방지 제한"이 추가되었습니다. (2017년 4월 6일)
+          특정 고객에 의해 서버부하 현상이 반복되면서 보다 안정적인 OpenAPI 서비스 제공을 위한 추가정책입니다.
+          CommRqData(연속조회를 포함한 데이터 조회요청), SendCondition(조건검색 조회요청), CommKwRqData(복수종목 조회요청) 들이 해당됩니다.
+          서버의 상황에따라 유동적일 수 있어서 초당 5회와 같이 명확한 기준을 알려드리기 어려운 점 양해 부탁드립니다.
+          서버부하방지 제한에 적용되는 경우에는 메세지박스가 출력되며 데이터요청이 불가해집니다.
+          프로그램 종료 후 재접속으로 해지할 수 있습니다.
+          (OpenAPI 게시판 조회제한 관련 공지내용 참고.)
+      
+	  
+          [주문횟수 제한]
+          OpenAPI를 통한 주문은 1초당 5회로 제한됩니다.
+          SendOrder(주식주문), SendOrderFO(파생주문), SendOrderCredit(신용주문) 들이 해당됩니다.
+          1초당 5회를 초과하는 주문전송에대해서는 에러코드가 리턴됩니다.
+          ※ 위 조회횟수 제한과 주문횟수 제한은 별개로 각각 카운트 됩니다.
+	  
+	  
+          [실시간 데이터 제한]
+          하나의 화면번호에 실시간시세를 등록할 수 있는 최대 종목수는 100종목 입니다.
+          이외 실시간 데이터를 수신하는데에는 제한이 없습니다.
+          ※ 너무 많은 종목의 시세를 수신하는 것은 사용자PC(CPU, 메모리, 네트워크)의 부하를 일으킬 수 있습니다.
+              이때 사용자PC상 시세 데이터처리에 지연현상이 일어날 수 있습니다.
+              또한 수신되는 실시간시세를 모두 파일에 기록하는 처리 로직은 PC부하를 일으키는 요인이 됩니다.
+              (특히, 엑셀로 구현하는 경우 부하 현상이 심할 수 있습니다.)
+              이는 사용자의 PC환경에따라, 실시간 처리 로직에따라 다르므로 
+              작업관리자창을 띄워서 PC부하정도를 모니터링 하는 등 테스트 하여 
+              사용에 무리가 없는 정도의 종목 수를 구현, 운영하시기 바랍니다.
+		  
+		  
+          [제공되지 않는 서비스]
+          - OpenAPI에서는 조건식 편집 및 저장이 불가 합니다. 영웅문4를 통해 편집/저장 하시기 바랍니다.
+          - 차트데이터 조회시 이동평균을 포함한 지표데이터는 제공되지 않습니다.
+          - OpenAPI는 이체등 증권업무를 제공하지 않습니다.
+          - OpenAPI는 윈도우 서버군 OS를 지원하지 않습니다.
+          - OpenAPI는 한글 외 언어 OS를 지원하지 않습니다.
+          - OpenAPI는 HTS, MTS등 다른 매체에서 사용되는 관심종목 연동을 지원하지 않습니다.
+          - OpenAPI는 64비트용 컨트롤로 제공되지 않습니다.
+
+
+          [백신 프로그램에 의한 실행 차단]
+          PC에 설치된 avast, 네이버백신, 다음클리너 등의 백신 프로그램이 OpenAPI로 제작된 고객님의 프로그램 실행을 차단할 수 있습니다.
+          차단으로 인해 실행이 안되는 경우 PC에 설치된 백신프로그램의 환경설정 및 차단된 프로그램 목록을 참고해보시기 바랍니다.
+          avast 백신에의한 실행차단의 경우 아래와 같은 방법으로 해결하시기 바랍니다.
+          1. 시스템 트레이 영역의 avast 아이콘 위에서 마우스 우측버튼을 클릭하고, “avast! 열기”를 실행
+          2. 오른쪽 상단 "환경 설정” 클릭
+          3. 왼쪽 “전역 예외” 탭 선택 -> 파일경로 “검색”버튼 클릭 -> c:\OpenApi 선택 -> “추가”버튼 클릭 -> “확인” 버튼 클릭
+
+		  
+          ]]>
+      </subject>
+    </Content>
+    <Content name="OpenAPI 오류코드">
+      <subject name="기본설명" type="desc">
+          <![CDATA[
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          OpenAPI는 각 함수에서 리턴값으로 함수성공여부를 판단할 수 있습니다.
+          함수에따라 리턴값이 0 또는 1일때 함수 정상호출 이며, 0보다 작은 값은 에러를 나타냅니다.
+          주요 에러코드는 -200번(시세과부하), -308번(주문전송 과부하)입니다.
+          ※ 함수호출이 0 또는 1로 정상호출인 경우에도 서버에서 에러처리가 될 수 있습니다.
+                이 경우 OnReceiveMsg() 이벤트에서 서버의 에러메세지를 확인할 수 있습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+              1         // 정상처리                                                                    
+              0         // 정상처리                                                                    
+            -10        // 실패
+            -11        // 조건번호 없슴                                                                
+            -12        // 조건번호와 조건식 불일치                                                     
+            -13        // 조건검색 조회요청 초과
+            -14        // 실시간 조건검색 요청 10개 초과
+            -15        // 거래소 구분값 오류
+            -16        // 조건식 이름 이상
+          -100        // 사용자정보교환 실패                                                           
+          -101        // 서버 접속 실패                                                                
+          -102        // 버전처리 실패                                                                 
+          -103        // 개인방화벽 실패                                                               
+          -104        // 메모리 보호실패                                                               
+          -105        // 함수입력값 오류                                                               
+          -106        // 통신연결 종료                                                                 
+          -107        // 보안모듈 오류                                                                 
+          -108        // 공인인증 로그인 필요                                                          
+                                                                                                    
+          -200        // 시세조회 과부하                                                               
+          -201        // 전문작성 초기화 실패.                                                         
+          -202        // 전문작성 입력값 오류.                                                         
+          -203        // 데이터 없음.                                                                  
+          -204        // 조회가능한 종목수 초과. 한번에 조회 가능한 종목개수는 최대 100종목.           
+          -205        // 데이터 수신 실패                                                              
+          -206        // 조회가능한 FID수 초과. 한번에 조회 가능한 FID개수는 최대 100개.               
+          -207        // 실시간 해제오류                                                               
+          -209        // 시세조회제한                                                               
+                                                                                                    
+          -300        // 입력값 오류                                                                   
+          -301        // 계좌비밀번호 없음.                                                            
+          -302        // 타인계좌 사용오류.                                                            
+          -303        // 주문가격이 주문착오 금액기준 초과.                                                     
+          -304        // 주문가격이 주문착오 금액기준 초과.                                                     
+          -305        // 주문수량이 총발행주수의 1% 초과오류.                                          
+          -306        // 주문수량은 총발행주수의 3% 초과오류.                                          
+          -307        // 주문전송 실패                                                                 
+          -308        // 주문전송 과부하                                                               
+          -309        // 주문수량 300계약 초과.                                                        
+          -310        // 주문수량 500계약 초과.                                                        
+          -311        // 주문전송제한 과부하
+          -340        // 계좌정보 없음.                                                                
+          -500        // 종목코드 없음.                                                                
+
+          ]]>
+      </subject>
+    </Content>
+<Content name="모의투자">
+      <subject name="기본설명" type="desc">
+          <![CDATA[
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          OpenAPI는 영웅문4 HTS와 동일한 모의투자 시스템을 제공합니다.
+          OpenAPI로 프로그램 개발시 모의투자에서 데이터검증 및 기능 테스트를 수행하시기 바랍니다.
+		  
+          모의투자 규정은 https://www.kiwoom.com/h/mock/ordinary/VMockTotalSMAIN1View?dummyVal=0 운영규정에서 확인하실 수 있습니다.
+		  
+          모의투자 서버에서의 주문체결내역/계좌정보/잔고데이터에 대한 문의는 모의투자 게시판을 이용해주시기 바랍니다.
+          모의투자 Q/A 게시판 https://www.kiwoom.com/h/mock/ordinary/VMockTotalNOTICView
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          [모의투자 주요 특징]
+		  
+          1. 상시 모의투자 신청
+          OpenAPI 사용신청과 별개로 상시모의투자 사용신청 후에 사용하실 수 있습니다.
+          사용신청 여부를 영웅문4 HTS와 공유합니다.
+
+          2. 동일ID 중복 로그인
+          모의투자 서버로 동일ID 중복 로그인이 제한됩니다.
+          동일ID로 모의투자, 실거래 서버 각각의 로그인은 가능 합니다.
+
+          3. 서비스 제한
+          모의투자에서는 특정 TR서비스 사용이 불가 합니다.
+          이는 TR목록에서 확인 가능 합니다.
+          또한 포트폴리오를 대상으로 하는 조건검색은 모의투자에서 불가 합니다.
+
+          4. 수수료 차이
+          실거래시 매수 매도 수수료는 각각 0.015%이며 
+          모의투자의 수수료율은 0.35% 의 수수료로 계산됩니다
+
+          5. 데이터 제공
+          모의투자에서 제공하는 시세관련 (조회및 실시간시세, 조건검색, 차트) 데이터는 실거래 서버 데이터와 동일한 데이터 입니다.
+          이외 주문이나 계좌정보, 잔고 등의 데이터는 실거래 서버와는 별개 입니다.
+          따라서 데이터의 소숫점 표현등의 단위가 실거래 서버의 데이터와 다를 수 있습니다. 
+              (ex opw00004의 손익율, opw00018의 수익률 데이터 모의투자에서는 소숫점표현. 실거래 서버는 소숫점표현 없음)
+          ※ 주문체결 주의할 점 : 
+              모의투자의 가상체결 시스템상 주문체결은 시세(호가)에 반영되지 않습니다.
+		  
+          ]]>
+      </subject>
+    </Content>	
+<Content name="자주 묻는 질문">
+      <subject name="게시판 사용에 대해서" type="desc">
+          <![CDATA[
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          - OpenAPI는 전용 게시판이 운영중 입니다.
+		  
+          - 고객게시판, 영웅문4 게시판 등 타 게시판에 OpenAPI문의를 하시면 답변이 늦어질 수 있습니다.
+		  
+          - 문의 주신 순서에따라 답변 드리지만, 내용에따라 여러 담당자를 거쳐서 확인하느라 시간이 소요되는 경우가 있습니다.
+		  
+          - 문의주실때 사용하신 ID, 접속하신 서버(모의투자여부)와 함께
+                  주문에대한 문의시에는 주문전송시간, 주문종목
+                  TR조회 문의시에는 TR명
+                  조건검색 문의시에는 조회시간, 검색식 이름
+                  위의 정보들을 알려주시면 좀더 정확한 확인 및 답변이 가능 합니다.
+				  
+          - OpenAPI 기능외 구체적인 코딩 가이드를 해드리거나, 매매로직에 대한 답변은 드리기 어려운점 양해 부탁드립니다.
+		  
+          - 모의투자 서버에서의 주문체결내역/계좌정보/잔고데이터에 대한 문의는 모의투자 1:1 게시판을 이용해주시기 바랍니다.
+                  모의투자 1:1 Q/A 게시판 https://www.kiwoom.com/h/mock/ordinary/VMockTotalNOTICView
+          
+          ------------------------------------------------------------------------------------------------------------------------------------                                        
+
+          ]]>
+      </subject>
+      <subject name="키움OpenAPI 처음 접합니다." type="desc">
+          <![CDATA[
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          Q : 어떤 개발언어로 구현해야 하나요?
+		  
+          A : 당사 OpenAPI는 COM방식의 ocx컨트롤로 제공됩니다.
+               ocx컨트롤을 탑재할 수 있다면 개발언어에대해 제한은 없습니다.
+               모든 개발언어에대한 샘플제공이 어려운 점은 양해 부탁드립니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 구현 및 실행 환경에대한 제한이 있나요?
+		  
+          A : 당사 OpenAPI는 32비트용 ocx로 제공됩니다.
+               64비트용은 제공되지 않으니 구현시 주의하시기 바랍니다.
+               64비트 엑셀, 64비트 파이썬, Visual Studio 2022 환경 등에서 개발이 불가 합니다.
+               또한 실행시 서버급OS, 한글외 타 언어OS 환경은 지원하지 않습니다.
+               OpenAPI는 (함수나 이벤트 모두) 스레드를 지원하지 않으므로 OpenAPI함수나 이벤트를 스레드에서 호출하는것은 안정성을 보장할 수 없습니다.
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : OpenAPI를 설치했는데 바탕화면에 아무것도 안생겨요
+          
+          A : OpenAPI는 설치시 실행파일이 존재하지 않습니다.
+               당사 OpenAPI를 사용하여 프로그램(실행파일)을 사용자가 직접 구현해야 합니다.
+               설치과정은 당사의 OpenAPI 컨트롤을 사용할 수 있도록 PC(레지스트리)에 등록하는 과정이라 여기시면 되겠습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : KOA StudioSA 가 뭔가요?
+          
+          A : KOA스튜디오는 OpenAPI 개발 참고용 프로그램 입니다.
+               OpenAPI가 제공하는 API함수들, 이벤트들의 사용법을 참조 하실 수 있습니다.
+               이외에도 조회할 수 있는 데이터들을 확인하거나 실제로 조회해볼 수 있습니다.
+               OpenAPI프로그램 구현시 KOA스튜디오에서 조회된 데이터와 비교해볼 수 있습니다.
+               KOA스튜디오는 모의투자 서버로만 접속 가능 합니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 로그인이 실패합니다. 버전처리가 뭔가요?
+          
+          A : 버전처리는 OpenAPI 실행에 필요한 최신 버전을 다운로드 하는 과정을 말합니다.
+               OpenAPI 로그인창이 다운로드 할 최신버전의 파일을 유무를 확인하여
+               사용중인 파일보다 최신 파일이 있는 경우 서버에 파일 다운로드를 요청합니다.
+               이 과정에서 OpenAPI 특성상 프로그램을 먼저 종료해주어야 할 필요가 있습니다.
+               OpenAPI 프로그램이 실행되며 OpenAPI 관련 파일들을 이미 사용하고 있어서
+               최신 파일로 변경할 수 없게 됩니다.
+               
+               OpenAPI 프로그램을 먼저 종료해달라는 메세지 출력시 로그인창과 메세지창을 그대로 둔채로 
+               KOA스튜디오를 포함하여 실행하셨던 프로그램을 먼저 종료하신뒤 로그인창이 출력한 메세지창 확인을 누루면
+               버전처리가 정상적으로 진행되고 다음번 버전처리가 있을때까지는 메세지창 출력과 버전처리 과정 없이 접속됩니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 함수와 이벤트의 차이가 뭔가요? 동작원리를 알고 싶습니다.
+
+          A : OpenAPI에서 여러 함수와 이벤트가 제공됩니다.
+               이중 그 이름앞에 "On" 으로 시작하는 것을 이벤트, 외의 것들을 함수로 보시면 되겠습니다.
+               함수는 사용자가 임의로 호출하여 사용할 수 있고
+               이벤트는 서버의 응답이 수신되거나 특정한 조건에 부합하는 경우 시스템상에서 자동으로 발생되는 것을 말합니다.
+               이벤트는 사용자가 필요에따라 임의로 호출하여 사용할 수 없습니다.
+               예를들어 사용자는 CommRqData() 함수를 사용하여 서버에 특정 데이터를 요청하고
+               이에대한 서버의 응답이 도착했을때 OnReceiveTrData() 이벤트가 발생됩니다.
+               
+               함수와 이벤트는 아래와 같이 동작 합니다.
+               로그인 : CommConnect() 함수 호출 --> 로그인창 출력 --> OnEventConnect() 로그인에 대한 서버응답 이벤트 발생
+               조건검색 : GetConditionLoad() 서버에 저장된 조건식로드를 위한 함수 호출 --> OnReceiveConditionVer() 서버응답 이벤트 발생
+               데이터 조회 : CommRqData() 서버에 데이터 요청 함수 호출 --> OnReceiveTrData() 서버응답 이벤트 발생
+                              --> OnReceiveRealData() 실시간 데이터 이벤트 발생
+               주문 : SendOrder() 서버로 주문 전송 함수 호출 --> OnReceiveTrData() 서버응답 이벤트 발생 
+                       --> OnReceiveChejanData() 실시간 주문체결 이벤트 발생
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+               
+          Q : TR, FID 용어가 무슨뜻인가요?
+
+          A : TR(Transaction)은 서버와의 통신단위를 의미 합니다.
+               특정한 데이터를 요청하고 수신하는 한번의 행위로 보시면 되겠습니다.
+               OpenAPI는 차트데이터를 포함하여 200여가지의 조회서비스를 제공하고 있으며
+               하나하나를 TR 서비스 라고 명칭합니다.
+               FID(Field  ID)는 데이터 항목마다에 부여된 고유한 ID를 의미 합니다.
+               한번에 여러 항목의 데이터가 서버와 송수신되면서 특정한 데이터 항목을 식별하기 위해 사용됩니다.
+               가령 주식체결 실시간시세 데이터가 수신될때 여러가지 항목중 
+               현재가(가격) 데이터 항목은 FID 10번, 거래량 데이터 항목은 FID 15번 입니다.
+               OpenAPI에서 제공되는 TR과 FID 목록은 KOA스튜디오 "TR목록", "실시간목록"에서 각각 확인하실 수 있습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+               
+          Q : 몇 종목까지 조회할 수 있나요?
+
+          A : 실시간으로 시세를 수신할때 종목의 수를 제한하지는 않습니다.
+               다만 너무 많은 종목의 시세를 수신하는 경우 사용자 PC의 부하를 일으킬 수 있으며
+               이로 인해 사용하시는 OpenAPI 프로그램의 데이터처리 지연현상을 야기할 수 있습니다.
+               실시간 시세를 건별로 모두 파일 또는 DB에 기록하는 동작을 구현하는 경우
+               부하/지연 현상을 일으킬 가능성이 높습니다.
+               이는 사용하시는 프로그램이 어떤 처리로직으로 구현되었는지와 함께
+               PC(CPU/메모리/네트워크)의 사양에 좌우 됩니다.
+               
+               실시간시세를 수신하면서 PC의 작업관리자창을 띄워놓고 PC의 부하정도를 확인하시며,
+               동시에 주문을 발생시켜서 주문에대한 체결내역 수신에 영향을 미치지 않는 정도인지
+               구현단계에서 프로그램을 검증해보시길 권장드립니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+               
+          Q : OpenAPI 사용시 별도의 비용이 부과되나요?
+
+          A : OpenAPI는 별도의 비용이 부과되지 않습니다.
+               영웅문4, 영웅문S 와 동일한 매매 수수료가 부과됩니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 한PC에 API 몇개나 띄울수있나요?
+
+          A : 제한을 두진 않습니다.
+               OpenAPI는 동일한ID로의 중복접속을 허용하지 않습니다. 
+               동일한 ID로 모의투자 접속과 실거래 서버 접속은 동시에 가능 합니다.
+               여러개의 접속 ID를 사용하는 경우 ID를 다르게하여 여러번 실행/접속 할 수 있습니다.
+               다만 여러번 실행된 OpenAPI 프로그램이 구동중 필요한 파일에 동시에 접근하면서 문제가 발생할 수 있습니다.
+               여러개의 OpenAPI를 동일PC에서 실행하시는 경우에는 충분한 테스트 및 검증과정을 거치시기 바랍니다.
+               한PC에서 하나의 OpenAPI실행을 권장 드립니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+               
+          ]]>
+      </subject>
+      <subject name="키움OpenAPI 개발/구현 중입니다." type="desc">
+          <![CDATA[
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 소스에 open api 컨트롤 등록시 오류가 납니다.
+          
+          A : OpenAPI는 64비트용으로 제공되지 않습니다. OpenAPI ocx 컨트롤이 64비트용으로
+               추가되지 않았는지 확인해보시기 바랍니다.
+               비주얼 스튜디오 2022, 64비트 MS Office(엑셀), 64비트 파이썬 등 64비트 개발환경은 지원되지 않습니다.
+               프로젝트 환경에 유니코드 문자열을 사용하도록 설정되어 있다면, 
+               멀티바이트 문자 사용으로 변경해보시기 바랍니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : RQName은 어떤 값을 입력하나요?
+
+          A : RQName은 사용자가 임의로 지정하여 사용합니다.
+               한글 사용이 가능하므로 가령 "주식주문", "차트조회" 식으로 임의 지정하실 수 있고,
+               해당 조회요청에대한 데이터가 수신될때 임의로 지정했던 RQName이 그대로 수신됩니다.
+               따라서 데이터 수신 이벤트가 발생할때 어떤 요청에대한 수신인지 구분하기 위한 용도로 사용하시면 되겠습니다.
+               RQName은 80바이트 (한글 40글자)내로 사용해주시길 권장드립니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 계좌비밀번호를 입력하라고 나옵니다
+          
+          A : OpenAPI는 계좌비밀번호 입력창을 통해서만 계좌비밀번호 입력이 가능합니다.
+               당사 OpenAPI는 계좌비밀번호를 평문으로 입력받지 않습니다.
+               계좌비밀번호 입력창은 사용자가 입력하는 비밀번호를 암호화하여 저장 및 서버로 전송하게 됩니다.
+
+               계좌비밀번호 입력창을 출력하는 방법은 두가지 입니다.
+               OpenAPI를 로그인하시면 윈도우 작업표시줄에 사각형으로 깜박이는 트레이아이콘이 표시됩니다.
+               깜박이는 아이콘 위에서 마우스 우클릭메뉴에서 "계좌비밀번호 저장" 을 선택하시는 방법
+               또 하나는 코딩으로 출력하는 방법 입니다.
+               로그인 후에 OpenAPI.KOA_Functions("ShowAccountWindow", "")
+               호출하시면 계좌비밀번호 입력창이 출력됩니다.
+               계좌비밀번호는 계좌비밀번호 입력창에서만 입력/등록이 가능하며
+               KOA스튜디오 TR조회시 입력값들중 "비밀번호" 란은 공백으로 두시고
+               "비밀번호입력매체구분" 값은 "00" 으로 입력하셔서 조회하시면 되겠습니다.
+               직접 구현하신 프로그램상에서도 조회 또는 주문시 계좌비밀번호는 따로 입력하지 않습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 계좌번호가 10자리 인가요?
+          
+          A : 당사의 계좌번호체계는 10자릿수 입니다.
+               영웅문4, 영웅문S 등은 사용자에게 8자리의 계좌번호를 노출하고
+               뒤에 2자리는 프로그램내에서 관리됩니다.
+               OpenAPI에서는 계좌번호가 따로 관리되지 않으며 사용자가 입력한 10자릿수가 사용됩니다.
+               TR조회 및 주문시 계좌번호 10자리를 입력해주시기 바랍니다.
+               계좌번호 10자리는 OpenAPI로그인 후 계좌비밀번호 입력창에서 확인하실 수 있습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : TR조회중 수신이벤트가 발생되었는데 데이터가 없거나 이상한 값 입니다.
+          
+          A : TR을 요청하실때 사용되는 화면번호를 확인해보시기 바랍니다.
+               동일한 화면번호를 연속으로 사용하거나 프로그램내에서 사용되는 화면번호
+               갯수가 200개가 넘어가는 경우 (수신)데이터의 유효성이 보장되지 못합니다.
+               매번 새로운 화면번호를 사용하시거나 여러개의 화면번호를 번갈아 사용하는 방법도 무방합니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 1초당 5회 횟수제한에는 어떤 것들이 해당되나요?
+          
+          A : 특정 사용자에의해 서버의 부하가 발생하는 것을 방지하기 위해
+               조회 및 주문 횟수를 제한하고 있습니다.
+               쉽게는 데이터 요청(조회), 주문이 각각 1초당 5회로 여기시면 되겠습니다.
+               조회시 1초당 5회 횟수는 CommRqData(), CommKwRqData(), SendCondition() 함수 사용이 합산되고
+               조회와 별개로 주문시 1초당 5회 횟수는 SendOrder(), SendOrderFO() 함수 사용이 합산됩니다.
+               해당 제한에 적용되는 경우 각 함수의 리턴값으로 에러코드가 리턴되고
+               카운트는 1초마다 초기화 됩니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 실시간시세 수신하는데 종목수 제한이 있나요?
+          
+          A : 실시간으로 시세를 수신할때 종목의 수를 제한하지는 않습니다.
+               프로그램내에서 사용되는 화면번호 하나에 실시간시세를 서버로 등록할 수 있는 최대 종목의 100종목 입니다.
+               그리고 프로그램내에서 사용할 수 있는 화면번호의 갯수는 최대 200개 입니다.
+               따라서 이론적으로는 100 X 200 개 종목에대해 실시간 시세를 등록/수신 할 수 있습니다.
+               다만 데이터 수신처리 로직에따라, PC(CPU/메모리/네트워크)의 부하 및 프로그램 지연현상이 발생될 수 있습니다.
+               처리로직의 성격이나 PC사양에따라 현상이 다를것이므로
+               구현하시는 중 테스트를 통해 종목의 수를 늘리거나 줄여서 문제가 없는 정도의 종목 수를 운영하시기 바랍니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 수신된 데이터 건수 이상으로 조회하려면 어떻게 해야하나요?
+          
+          A : 데이터 조회시 각 TR마다 한번에 수신할 수 있는 데이터의 양이 정해져 있습니다.
+               가령 opt10081 주식 일봉차트 데이터는 한번에 600건의 데이터가 조회됩니다.
+               한번에 조회된 데이터 건수 이상의 데이터가 서버에 존재하는 경우
+               조회 응답 이벤트인 OnReceiveTrData() 이벤트 발생시 연속된 데이터가 존재한다는 의미로
+               파라메터 값 (5번째 값)이 "2"로 수신됩니다.
+               이때 연속된 데이터를 더 요청하려면 최초 조회때 SetInputValue로 셋팅한 입력값들 그대로하여
+               CommRqData 로 데이터를 요청할때 이번에는 연속조회 옵션값(3번째 인자)을 
+               수신된 값과 동일하게 2로 입력하여 데이터를 요청하시면 되겠습니다.
+               연속조회 중간에 다른 TR을 요청하는 경우 연속조회가 되지 않습니다.
+               
+               최초조회 : CommRqData("차트조회", "opt10081", 0, "1111");
+               최초조회 데이터 수신 후 연속조회 : CommRqData("차트조회", "opt10081", 2, "1234");
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+               
+          Q : 현재가 앞에 붙는 + 혹은 - 는 뭘 의미하는건가요?
+          
+          A : 현재가 데이터 앞에 부호가 2개 붙어서 수신될수 있습니다.
+               첫번째 부호는 영웅문4 HTS, 영웅문S MTS 등의 시스템들이 화면상
+               데이터의 폰트색상(파랑, 빨강)을 표기하기 위해 사용되는 값 입니다.
+               두번째 부호는 전일대비 상승/하락 의미 입니다.
+               OpenAPI는 데이터를 최대한 가공하지 않고 제공하고 있기 때문에 동일하게 전달되고 있습니다.
+               필요에따라 위와 같은 용도로 사용하시거나, 부호를 잘라내어 사용하시면 되겠습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+               
+          Q : 종목코드 앞에 A라고 붙는건 뭔가요?
+          
+          A : 수신된 종목코드 6자리 앞에 A는 장내주식, J는 ELW종목, Q는 ETN종목을 의미합니다.
+               종목코드 앞에 마켓구분값이 붙는 경우와 그렇지 않은 경우는
+               영웅문HTS, MTS등 쓰임에따라 설계된것이고 OpenAPI가
+               이러한 데이터들을 공유하여 데이터의 가공 없이 제공되고 있기 때문입니다.
+               구현하시는 중에 종목코드앞에 마켓구분값 필요여부에따라 종목코드가 6자리를 초과하는 경우 
+               앞자리를 잘라내어 사용하시면 되겠습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+               
+          Q : 화면번호는 어떤역할을 하는지요?
+          
+          A : 사용자 입장에서는 영웅문4의 화면번호와 동일한 맥락이라고 보시면 되겠습니다.
+               시스템적으로 화면번호는 데이터 송수신 및 실시간데이터의 키값으로 사용됩니다.
+               하나의 화면번호에 특정 종목의 실시간시세가 등록되어 수신되고 있는 상태에서
+               해당 화면번호를 다른 용도로 다시 사용하거나 종목을 바꾸어 데이터 요청에 사용하는 경우
+               해당 화면번호에 등록되어 있던 종목은 자동으로 실시간시세 해지가 됩니다.
+               
+               가령 화면번호 1111을 사용하여 이미 A종목의 실시간시세를 수신하고 있는 상태에서
+               1111 화면번호로 B종목의 시세데이터를 조회하는 경우 A종목의 실시간시세는 자동으로 해지되고
+               1111 화면번호로 B종목의 실시간시세가 등록되어 수신됩니다.
+
+               OpenAPI는 사용자가 화면번호를 임의로 지정할 수 있어서
+               어떤 화면번호에 어떤 데이터를 요청/수신 할지 관리하실 수 있습니다.
+               화면번호는 몇가지 규칙을 지켜주시면서 임의의 값으로 지정하여 사용하시면 됩니다.
+               1. 4자릿수 숫자 사용 "1111", "1234",,,
+               2. 프로그램내 화면번호 최대 사용갯수는 200개. 동일한 화면번호 재사용 가능
+               (영웅문4 에서 화면을 200개까지 열수 있는 개념으로 이해하시면 되겠습니다.)
+               3. 동일한 화면번호를 연속적으로 반복하여 사용하지 않도록 운영하시면 됩니다.
+               데이터 요청시, 주문전송시 화면번호를 생략할 수 없습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 실시간데이터 받는법 문의
+          
+          A : OpenAPI에서 실시간 시세데이터는 모두 OnReceiveRealData() 이벤트 발생을 통해 수신 됩니다.
+               실시간시세 데이터를 서버에 등록(요청)하는 방법은 두가지 입니다.
+               OPT계열의 시세관련 TR서비스를 요청하는 경우 해당 종목의 실시간 시세가
+               자동으로 서버에 등록되어 이후 해당 종목에 대해 OnReceiveRealData() 이벤트가 발생됩니다.
+               또 한가지는 SetRealReg 함수를 사용하는 방법 입니다.
+               조회요청/수신 없이 실시간시세만 등록하는 방법이라 여기시면 되겠습니다.
+               SetRealReg 함수로 등록시 주식체결, 주식우선호가, 주식호가잔량 실시간을 수신하실 수 있습니다.
+               
+               하나의 화면번호로 실시간 등록할 수 있는 종목의 수는 최대 100종목 입니다.
+               실시간 시세데이터는 실시간타입 단위로 수신 됩니다. 
+               수신된 실시간타입에 포함되어 있는 FID 항목들이 모두 수신됩니다.
+               가령 "주식체결" 실시간타입이 수신된 경우 주식체결 실시간타입에 포함되어 있는 
+               fid 항목들의 값들이 모두 수신됩니다.
+               
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 실시간 주식체결 데이터 수신시 매수인지 매도인지 구분할 수 있나요?
+          
+          A : 실시간 주식체결데이터 중에서 fid 15번 거래량 데이터의 부호가 매도/매수를 의미합니다. 
+               -마이너스 거래량인 경우 매도체결에대한 거래량 입니다. +거래량은 매수체결을 의미 합니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 지수 실시간 데이터를 받고 싶은데 어떻게 해야하나요?
+          
+          A : OpenAPI에서 제공하는 TR서비스 중 opt로 시작하는 시세관련 서비스로
+               데이터를 서버에 요청하는 경우 해당 종목의 실시간 시세데이터가 서버에 자동으로 등록되어
+               OnReceiveRealData 이벤트를 통해 실시간 시세데이터가 수신됩니다.
+               지수시세 데이터 조회는 opt20001 : 업종현재가요청 등의 업종시세관련 TR서비스를 참고해보시기 바랍니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 실시간데이터중 주식체결 데이터와 주식시세 데이터의 차이가 뭔지 알려주세요
+          
+          A : "주식체결" 데이터는 시장에서 특정 종목의 체결(거래)이 이루어졌을때마다 발생하고
+               "주식시세" 데이터는 특정 종목이 기세일때 발생하는 데이터로 체결없이 현재가가 변경되는 대량매매나
+               종목 종가 데이터 보정 시 발생하는 데이터 입니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 같은 종목을 여러번 실시간등록 해도 문제가 없나요?
+          
+          A : 해당 종목의 실시간시세를 수신하는데에는 문제 되지 않습니다.
+               여러번 등록되어도 해당 종목의 실시간시세 데이터는 한번만 등록된 경우와 동일하게 수신됩니다.
+               다만, 사용하시는 프로그램 성격상 해당 종목의 실시간시세를 해지 해야 할 필요가 있다면,
+               화면번호가 실시간시세 데이터의 key가 되기 때문에 등록했던 화면번호로 모두 해지해주어야 합니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 실시간 데이터로 vi 발동 정보를 가져오고 싶습니다
+          
+          A : VI발동/해제 실시간은 OPT10054 TR 조회시에 등록됩니다.
+               이후 OnReceiveRealData() 이벤트 발생으로 "VI발동/해제" 실시간타입이 수신됩니다.
+               KOA스튜디오에서 OPT10054 TR을 참고하셔서 사용해보시기 바랍니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 1초당 5회 이하로 조회중인데 과도한 요청이라는 메세지가 나옵니다.
+          
+          A : OpenAPI에는 1초당 5회 횟수제한과는 별개로 서버부하방지 제한이 있습니다.
+               특정 고객에의해 서버부하 현상이 반복되면서 보다 안정적인 OpenAPI 서비스 제공을 위한 추가정책입니다.
+               CommRqData(연속조회를 포함한 데이터 조회요청), SendCondition(조건검색 조회요청), CommKwRqData(복수종목 조회요청) 들이 해당됩니다.
+               서버의 상황에따라 유동적일 수 있어서 초당 5회와 같이 명확한 기준을 알려드리기 어려운 점 양해 부탁드립니다.
+               1초당 5회 정도의 데이터 요청을 장시간 반복하는 경우 이에 적용될 가능성이 높습니다.
+               서버부하방지 제한에 적용되는 경우에는 메세지박스가 출력되며 데이터요청이 불가해집니다.
+               프로그램 종료 후 재접속으로 다시 정상적으로 사용할 수 있습니다.
+               서버부하방지 제한에 적용된 경우 다시 적용될 가능성이 높으니 반복적인 조회간격에 더 크게 여유를 두어 구현하시기 바랍니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 여러 종목을 한번에 조회하고 싶습니다.
+          
+          A : CommKwRqData() 함수는 복수종목을 입력하여 최대 100종목의 여러종목을
+               한번에 조회할 수 있는 기능 입니다. 수신은 TR OPTKWFID 으로 고정되어 있습니다.
+               CommRqData() 함수로는 복수종목 조회가 불가 합니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 주문가능금액을 구하는 tr에 대한 질문입니다.
+          
+          A : opw00001 TR의 "주문가능금액"은 예수금중 사용 가능한 금액이라고 여기시면 되고,
+               "100%종목주문가능금액" 데이터는 현금분 금일재상용금액+전일재사용금액+현금 중에 주문가능한금액 입니다.
+               가령 100만원이 있는 상태에서 보유중인 잔고 10만원만큼 청산하면
+               주문가능금액은 그대로 100만원이고, 100%주문가능금액은 110 이 됩니다.
+               
+               이외 OPW00011(증거금율별주문가능수량조회요청)조회후 
+               증거금20주문가능금액 ~ 증거금100주문가능금액을 사용하시거나 미수불가 주문가능금액 항목을 참고해보시기 바랍니다.
+               OPW00011에서 미수포함 주문가능데이터를 구하는 법은 "적용증거금율"에서 구해지는 값(예:"40%")으로 
+               해당"(증거금40)주문가능금액"과 "증거금40주문가능수량"을 구하실 수 있습니다.
+               시장가 주문인 경우 주문가능수량은 상한가로 계산이 되니 TR서비스 요청시 가격입력을 상한가로 해주시면 되겠습니다.
+               미수주문을 사용하지 않고자 하시는 경우 영웅문4 HTS의 0398화면에서 증거금을 100% 현금으로 
+               설정하셔서 사용하실 수 있습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 잔고 손익을 실시간으로 알고 싶습니다.
+          
+          A : OpenAPI는 주문 발생시 체결에의한 잔고변경 시점에대한 잔고손익외 
+               따로 실시간으로 잔고손익을 제공하지 않습니다.
+               잔고에대한 손익을 실시간으로 계산하는 것은 사용자가 직접 구현해야 하는 부분 입니다.
+               OPW00004, OPW00018 등 TR조회로 보유잔고를 먼저 조회하신 뒤에
+               보유종목을 시세조회 또는 SetRealReg 함수로 실시간시세 등록하고
+               이후로 수신되는 보유종목의 시세 데이터를 사용하여 실시간으로 손익을 계산해보시기 바랍니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+               
+          Q : 잔고 손익, 수익률 계산공식 알려주세요.
+          
+          A : 영웅문4 HTS의 [0345] 화면에서 사용되는 공식으로 답변 드립니다.
+               손익, 수익률 계산시 수수료는 매수수수료와 매도수수료의 합산이며 원단위는 절사 됩니다.
+               제세금 값은 해당 종목에대해 코스피, 코스닥 등의 구분에따라 다르게 계산됩니다.
+                   - ETF, ELW, ETN : 세금 무료
+                   - 코스피 종목 거래세 + 농특세 : 0.05% + 0.15%
+                   - 코스닥 종목 : 평가금액의 0.20%
+                   - 코넥스 종목 : 평가금액의 0.10%
+                   - K-OTC : 평가금액의 0.25%
+               손익과 수익률 계산에 사용되는 기초데이터는 종목코드, 현재가, (평균)매입가, 보유수량 4가지 입니다.
+               
+               [평가손익, 수익률 도출 공식]
+               평가금액 = 현재가 X 수량
+               매입금액 = 매입가 X 수량
+               매수수수료 = 매입금액 X 수수료(모의투자 0.0035. 실거래 0.00015)
+               매도수수료 = 평가금액 X 수수료(모의투자 0.0035. 실거래 0.00015)
+               수수료합 = 매수수수료(원단위절사) + 매도수수료(원단위절사)
+               농특세 = 평가금액 X 10 X 0.0005
+               거래세 = 평가금액 X 10 X 0.0015
+               제세금 = 농특세 + 거래세
+               평가손익 = (현재가 - 매입가) X 수량 - (수수료합 + 제세금)
+               수익률 = 평가손익 / 매입금액 X 100
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+
+               
+          ]]>
+      </subject>
+      <subject name="키움OpenAPI 사용중입니다." type="desc">
+          <![CDATA[
+          ------------------------------------------------------------------------------------------------------------------------------------
+          
+          Q : 실시간 조건검색 종목이 영웅문4와 다르게 나옵니다.
+          
+          A : 조건검색 실시간으로 편입되는 종목이 순간적으로 편입/이탈을 반복하는 경우
+               서버에따라 결과가 일시적으로 다를 수 있습니다.
+               하지만 특정종목이 편입되어 머무르는 경우, 그리고 실시간이 아닌 검색 결과는 
+               서버나 매체에 무관하게 동일해야 맞습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 영웅문4로 전송한 주문이 OpenAPI로 수신되는데 맞나요?
+          
+          A : 실시간 주문체결 정보는 동일ID로 접속되어 있는 매체에 모두 전송됩니다.
+               따라서 영웅문4나 영웅문S로 발생시킨 주문에대해서 
+               OpenAPI의 실시간 주문체결 이벤트(OnReceiveChejanData)가 발생됩니다.
+               반대로 OpenAPI를 통해 발생시킨 주문을 영웅문4, 영웅문S 의 화면에서 실시간으로 확인하실 수 있습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 주문을 전송한 뒤에 응답이 없습니다.
+          
+          A : SendOrder 함수의 리턴값이 0으로 정상적인 주문을 전송한 뒤에도
+               해당 주문이 특정한 사유로 서버에서 거부처리 되었을 가능성이 있습니다.
+               주문거부 사유를 포함한 서버의 메세지를 OnReceiveMsg() 이벤트에서 확인하실 수 있습니다.
+               서버에서 주문거부 발생시 OnReceiveChejanData 이벤트는 발생되지 않습니다.
+               
+               정확한 주문 처리내역을 확인하고자 하실때는 접속ID, 주문시간, 주문종목으로 게시판에 문의해주시면
+               담당자를 통해 해당 주문 로그를 확인하여 답변드리겠습니다.
+               모의투자 서버에서의 주문 처리내역 확인은 위의 정보들로 하여 모의투자 게시판에 문의 부탁드립니다.
+               (모의투자 1:1 문의 https://www.kiwoom.com/h/mock/ordinary/VMockTotalNOTICView)
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+               
+          Q : 주문가능한 수량으로 주문한거 같은데 시장가 주문일때 증거금 부족 거부가 발생합니다.
+          
+          A : 시장가 주문의 경우 주문가격이 없기때문에 주문가능 수량을 계산할때 해당 종목의
+               상한가를 기준으로 하여 계산됩니다.
+               따라서 사용자가 현재가로 계산하여 주문수량을 입력했다면 해당주문이 시장가 주문인 경우
+               주문가능수량 초과로 증거금 부족 주문거부가 발생할 수 있습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 장시작전에 미리 접속할때 오전에 몇시이전은 작동하면 안되는지요?
+          
+          A : 서버점검시간은 매일 05:00 에 시작되며 보통 1분, 길어지면 5분정도 소요됩니다.
+               이 시간에는 접속자체가 불가하며 이전에 접속되어 있는 경우 접속이 단절됩니다.
+               조건검색 조회는 07:30 부터 가능합니다.
+               따라서 07:30 이후에 접속하시길 권장 드립니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 정정주문, 취소주문시에 OnReceiveChejanData 응답이 이상합니다.
+          
+          A : 정정이나 취소주문시 마지막 신호로 미체결삭제(미체결클리어) 신호가 한번 더 수신됩니다.
+               주문처리 완료시점으로 미체결수량을 0으로 만드는 신호라고 여기시면 되겠습니다.
+               해당 신호를 통해 영웅문4나 영웅문S의 주문화면에서 미체결상태의 주문을 클리어 또는 업데이트 합니다.
+               이때 FID 913번 값은 원주문의 마지막상태로 수신됩니다.
+               즉 취소주문의 원주문 상태가 접수상태에서 취소되었다면 "접수" 값으로 수신되고
+               원주문 상태가 일부 체결상태에서 취소되었다면 "체결" 값으로 수신됩니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+               
+          Q : 시간외 단일가 주문 방법이 어떻게 되나요?
+          
+          A : 주식 종목의 주문은 모두 SendOrder 함수가 사용됩니다.
+               정규장 마감 후 시간외 단일가 주문은 16:00 ~ 18:00 시간동안 가능하며
+               거래구분 62, 주문가격 0입력하여 주문하시면 되겠습니다.
+               10분 단위로 체결이 이루어지게 됩니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 모의투자 수익율이 이상합니다.
+          
+          A : opw00004  TR의 "손익율" 데이터는 모의투자와 실서버에서 단위가 다른 값이 수신됩니다.
+               모의투자 서버에서는 손익율 데이터가 소숫점으로 수신되고, 실거래 서버에서는 소숫점 없이 수신됩니다. 
+               실거래 서버에서 수신된 손익율 데이터의 뒤 4자리가 소숫점 데이터로 보시면 되겠습니다. 다른 항목들의 값은 동일합니다.
+               프로그램이 모의투자와 실서버 양쪽에서 수익율 값을 처리해야 하는 경우 접속된 서버를 구분해주시기 바랍니다.
+               접속하신 서버가 어디인지 구분하는 방법은
+               KOA_Functions("GetServerGubun", "") 함수를 사용하시면 되겠습니다.
+               리턴값은 "1" 일때 모의투자 서버에 접송중인 상태이고, 나머지 값은 실서버 접속 중으로 구분하시면 되겠습니다.
+               참고로 opw00018 TR서비스의 "수익률%" 항목에 대해서도 위와 동일합니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 조건검색 실시간을 1개가 아닌 2개이상 실행 가능?
+          
+          A : 실시간 조건검색은 최대 10개까지 동시에 사용이 가능합니다.
+               영웅문4에서 [0156] 조건검색실시간 화면을 최대 10개 열어놓으신것과 같습니다.
+               OpenAPI에서 A와 B조건식에대해 동일한 화면번호를 사용하게 되면 이전 조건식은 실시간이 중지됩니다.
+               각각 다른 화면번호를 사용하시고, 조건검색에서 사용하신 화면번호가 
+               또 다른 TR이나 주문에서 사용되지 않도록 하시는 경우 
+               A, B 동시에 실시간 조건검색 사용이 가능합니다.
+               OnReceiveRealCondition() 이벤트를 통해 실시간으로 수신되며 수신된 조건식이름으로 구분하시면 되겠습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+          Q : 조건식 불러오기 특정 조건식 못가져 옵니다.
+          
+          A : HTS와 OpenAPI의 조건검색 버전이 일치하지 않는 경우 특정 조건식을 불러오지 못할 수 있습니다.
+               OpenAPI를 자동로그인으로 사용중이시면 수동로그인으로 전환하셔서 버전처리를 
+               진행하신뒤에 사용해보시기 바랍니다.
+               버전처리를 정상적으로 진행한 이후에도 동일한 현상이시면 
+               사용하신 ID와 해당 조건식이름, GetConditionLoad 하신 시간으로 하여 문의주시면 
+               서버담당자와 확인해보도록 하겠습니다.
+          
+          ------------------------------------------------------------------------------------------------------------------------------------
+
+               
+          ]]>
+      </subject>
+    </Content>	
+</KOA_DevGuideList>

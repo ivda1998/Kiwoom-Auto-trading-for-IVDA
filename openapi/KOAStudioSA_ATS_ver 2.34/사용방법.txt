@@ -1,0 +1,3 @@
+
+OpenAPI 설치 기본경로는 "c:\OpenAPI"입니다.
+압축을 푼 KOAStudioSA.exe, KOALoader.dll 파일을 OpenAPI를 설치한 폴더에 복사한 다음 실행해주세요.

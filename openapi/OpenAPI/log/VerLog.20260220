@@ -1,0 +1,329 @@
+[22:42:23]:********************** Start **********************
+[22:42:23]:********************** Finish **********************
+[22:42:23]:FirstInstance
+[22:42:23]:Gdiplus Init
+[22:42:23]:Socket Init
+[22:42:23]:RegistryKey
+[22:42:23]:---------- Begin ----------
+[22:42:23]:RemoveTempDownloadedFiles
+[22:42:23]:SetVersionFileName
+[22:42:23]:InitControls
+[22:42:23]:CreateSubDirectory
+[22:42:23]:Read Security [1] Install[0]
+[22:42:24]:ASTX Procted ID 0 PWD 0 CERT 0
+[22:42:24]:ASTX Proc Done
+[22:42:24]:Server_Imit [SVRIP0]  IP=MainIP  port=MainPort
+
+[22:42:24]:InitDlg  etc read[0] [User ID][ ][ ]
+[22:42:24]:---------- Starter OnInitDialog End ----------
+[22:42:37]:Server_Imit [SVRIP0]  IP=MainIP  port=MainPort
+
+[22:42:37]:Server Socket 접속중...
+[22:42:37]:Server Socket 접속성공...
+[22:42:37]:교환이 완료될 때 까지 기다림
+[22:42:37]:암호화 HANDSHAKE:update  nLen=2044
+[22:42:37]:암호화 HANDSHAKE:final  nLen=82
+[22:42:37]:암호화 HANDSHAKE:ok  nLen=82
+[22:42:37]:********************** Start **********************
+[22:42:37]:서버에 FileDown요구 [mst.lst]
+[22:42:37]:ZipExtract BEFORE [1]
+[22:42:37]:ZipExtract AFTER [1] FileSize[1672]
+[22:42:37]:DownFileInList Size 다름 File[fjcode.dat] LocalSize[5152] ServerSize[5068] Restarter[0]
+[22:42:37]:DownFileInList CRC 다름 File[thcode.dat] LocalCrc[e8ed30b2] ServerCrc[8504ffce] Restarter[0]
+[22:42:37]:DownFileInList CRC 다름 File[trcode.dat] LocalCrc[4e3e3ccd] ServerCrc[7d6fc11b] Restarter[0]
+[22:42:37]:DownFileInList Size 다름 File[nkrealtime.dat] LocalSize[25292] ServerSize[27694] Restarter[0]
+[22:42:37]:DownFileInList Size 다름 File[opcode.dat] LocalSize[90708] ServerSize[202596] Restarter[0]
+[22:42:37]:DownFileInList CRC 다름 File[upcode.dat] LocalCrc[d192eaec] ServerCrc[0ae6df8d] Restarter[0]
+[22:42:37]:DownFileInList Size 다름 File[hjcode.dat] LocalSize[2060724] ServerSize[2565696] Restarter[0]
+[22:42:37]:DownFileInList Size 다름 File[sfcode.dat] LocalSize[599040] ServerSize[608816] Restarter[0]
+[22:42:37]:서버에 FileDown요구 [apiinitrsc.lst]
+[22:42:37]:ZipExtract BEFORE [2]
+[22:42:37]:ZipExtract AFTER [2] FileSize[2094]
+[22:42:37]:DownFileInList CRC 다름 File[image/btn_sign_u.bmp] LocalCrc[57c84c02] ServerCrc[7d18d725] Restarter[0]
+[22:42:37]:DownFileInList Size 다름 File[apiotrsc.lst] LocalSize[19720] ServerSize[20400] Restarter[0]
+[22:42:38]:DownFileInList Size 다름 File[khopenapi.ocx] LocalSize[492128] ServerSize[492656] Restarter[0]
+[22:42:38]:DownFileInList Size 다름 File[opstarter.exe] LocalSize[630888] ServerSize[630896] Restarter[0]
+[22:42:38]:DownFileInList CRC 다름 File[image/btn_sign_f.bmp] LocalCrc[29f48425] ServerCrc[deb4151c] Restarter[0]
+[22:42:38]:DownFileInList CRC 다름 File[image/btn_sign_d.bmp] LocalCrc[7a24fbc0] ServerCrc[0a2054dd] Restarter[0]
+[22:42:38]:DownFileInList Size 다름 File[system/mstfilelist_api.ini] LocalSize[132] ServerSize[145] Restarter[0]
+[22:42:38]:DownFileInList Size 다름 File[opcomms.dll] LocalSize[193128] ServerSize[193136] Restarter[0]
+[22:42:38]:DownFileInList Size 다름 File[opcommapi.dll] LocalSize[660584] ServerSize[660592] Restarter[0]
+[22:42:38]:DownFileInList CRC 다름 File[image/btn_sign_x.bmp] LocalCrc[a05e0727] ServerCrc[1a0e1e88] Restarter[0]
+[22:42:38]:서버에 FileDown요구 [fjcode.dat]
+[22:42:38]:ZipExtract BEFORE [3]
+[22:42:38]:ZipExtract AFTER [3] FileSize[1504]
+[22:42:38]:서버에 FileDown요구 [thcode.dat]
+[22:42:38]:ZipExtract BEFORE [4]
+[22:42:38]:ZipExtract AFTER [4] FileSize[9036]
+[22:42:38]:서버에 FileDown요구 [trcode.dat]
+[22:42:38]:ZipExtract BEFORE [5]
+[22:42:38]:ZipExtract AFTER [5] FileSize[918]
+[22:42:38]:서버에 FileDown요구 [nkrealtime.dat]
+[22:42:39]:ZipExtract BEFORE [6]
+[22:42:39]:ZipExtract AFTER [6] FileSize[8279]
+[22:42:39]:서버에 FileDown요구 [opcode.dat]
+[22:42:39]:ZipExtract BEFORE [7]
+[22:42:39]:ZipExtract AFTER [7] FileSize[23627]
+[22:42:39]:서버에 FileDown요구 [upcode.dat]
+[22:42:39]:ZipExtract BEFORE [8]
+[22:42:39]:ZipExtract AFTER [8] FileSize[1284]
+[22:42:39]:서버에 FileDown요구 [hjcode.dat]
+[22:42:45]:ZipExtract BEFORE [9]
+[22:42:45]:ZipExtract AFTER [9] FileSize[449278]
+[22:42:45]:서버에 FileDown요구 [sfcode.dat]
+[22:42:46]:ZipExtract BEFORE [10]
+[22:42:46]:ZipExtract AFTER [10] FileSize[56572]
+[22:42:46]:서버에 FileDown요구 [image/btn_sign_u.bmp]
+[22:42:46]:ZipExtract BEFORE [11]
+[22:42:46]:ZipExtract AFTER [11] FileSize[860]
+[22:42:46]:서버에 FileDown요구 [apiotrsc.lst]
+[22:42:46]:ZipExtract BEFORE [12]
+[22:42:46]:ZipExtract AFTER [12] FileSize[3135]
+[22:42:46]:서버에 FileDown요구 [khopenapi.ocx]
+[22:42:49]:ZipExtract BEFORE [13]
+[22:42:49]:ZipExtract AFTER [13] FileSize[205724]
+[22:42:49]:서버에 FileDown요구 [opstarter.exe]
+[22:42:53]:ZipExtract BEFORE [14]
+[22:42:53]:ZipExtract AFTER [14] FileSize[272048]
+[22:42:53]:서버에 FileDown요구 [image/btn_sign_f.bmp]
+[22:42:53]:ZipExtract BEFORE [15]
+[22:42:53]:ZipExtract AFTER [15] FileSize[870]
+[22:42:53]:서버에 FileDown요구 [image/btn_sign_d.bmp]
+[22:42:53]:ZipExtract BEFORE [16]
+[22:42:53]:ZipExtract AFTER [16] FileSize[682]
+[22:42:53]:서버에 FileDown요구 [system/mstfilelist_api.ini]
+[22:42:53]:ZipExtract BEFORE [17]
+[22:42:53]:ZipExtract AFTER [17] FileSize[272]
+[22:42:53]:서버에 FileDown요구 [opcomms.dll]
+[22:42:54]:ZipExtract BEFORE [18]
+[22:42:54]:ZipExtract AFTER [18] FileSize[96371]
+[22:42:54]:서버에 FileDown요구 [opcommapi.dll]
+[22:42:58]:ZipExtract BEFORE [19]
+[22:42:58]:ZipExtract AFTER [19] FileSize[266594]
+[22:42:58]:서버에 FileDown요구 [image/btn_sign_x.bmp]
+[22:42:58]:ZipExtract BEFORE [20]
+[22:42:58]:ZipExtract AFTER [20] FileSize[1194]
+[22:42:58]:CFile::Rename org(G:\autoTrade\openapi\OpenAPI\mst.lst), new(G:\autoTrade\openapi\OpenAPI\_mst.lst)
+[22:42:59]:==>InitRename()
+[22:42:59]:삭제할 파일 [G:\autoTrade\openapi\OpenAPI\image/btn_sign_u.bmp]
+[22:42:59]:이름변경 파일 [G:\autoTrade\openapi\OpenAPI\image/_btn_sign_u.bmp : G:\autoTrade\openapi\OpenAPI\image/btn_sign_u.bmp]
+[22:42:59]:삭제할 파일 [G:\autoTrade\openapi\OpenAPI\image/btn_sign_f.bmp]
+[22:42:59]:이름변경 파일 [G:\autoTrade\openapi\OpenAPI\image/_btn_sign_f.bmp : G:\autoTrade\openapi\OpenAPI\image/btn_sign_f.bmp]
+[22:42:59]:삭제할 파일 [G:\autoTrade\openapi\OpenAPI\image/btn_sign_d.bmp]
+[22:43:00]:이름변경 파일 [G:\autoTrade\openapi\OpenAPI\image/_btn_sign_d.bmp : G:\autoTrade\openapi\OpenAPI\image/btn_sign_d.bmp]
+[22:43:00]:삭제할 파일 [G:\autoTrade\openapi\OpenAPI\system/mstfilelist_api.ini]
+[22:43:00]:이름변경 파일 [G:\autoTrade\openapi\OpenAPI\system/_mstfilelist_api.ini : G:\autoTrade\openapi\OpenAPI\system/mstfilelist_api.ini]
+[22:43:00]:삭제할 파일 [G:\autoTrade\openapi\OpenAPI\image/btn_sign_x.bmp]
+[22:43:00]:이름변경 파일 [G:\autoTrade\openapi\OpenAPI\image/_btn_sign_x.bmp : G:\autoTrade\openapi\OpenAPI\image/btn_sign_x.bmp]
+[22:43:00]:<==InitRename()
+[22:43:00]:OnBnClickedCancel SetEvent[000002B4].. bCancel[1], bUser[0], bRetry[0]
+[22:43:01]:NKVersionUp 실행하기
+[22:44:07]:********************** Start **********************
+[22:44:07]:********************** Finish **********************
+[22:44:07]:CNKStarterApp::FirstInstance [OPStarter.exe] 실행 중
+[22:44:07]:CNKStarterApp::FirstInstance FALSE
+[22:44:07]:CNKStarterApp::InitInstance [OPStarter.exe] [OPVersionUp.exe] 실행 중으로 재 실행 방지 -> 종료
+[22:44:58]:CNKVersionUpApp::InitInstance CShareMem::IsShareMemCreated(CShareMem::MAPFILENAME_SHARED_MEM) : TRUE
+[22:44:58]:==>CNKVersionUpDlg::OnInitDialog() : G:\autoTrade\openapi\OpenAPI
+[22:44:58]:==>CNKVersionUpDlg::CompareStarter()
+[22:44:58]:<==CNKVersionUpDlg::CompareStarter() : Open API Login [0] 남아 있음.
+[22:44:58]:<==CNKVersionUpDlg::CompareStarter() : Open API Login [1] 남아 있음.
+[22:44:59]:<==CNKVersionUpDlg::CompareStarter() : Open API Login [2] 남아 있음.
+[22:44:59]:<==CNKVersionUpDlg::CompareStarter() : ProcessKill[0] 전 Login 존재.
+[22:45:00]:NKStarter 프로세스 종료됨
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_absolutedown.ini]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_aossdk.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_aossdkrad.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_asplnchr.exe]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_astxmanager.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\astxsdk/_atstrust.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\astxsdk/_bldinfo.ini]
+[22:45:00]:manifest 파일 다운됨 ####### strFname [astxsdk/microsoftvc90crt.manifest],  strFind [G:\autoTrade\openapi\OpenAPI\astxsdk/_microsoftvc90crt.manifest]
+[22:45:00]:manifest 파일 다운됨 ####### strOldFind [G:\autoTrade\openapi\OpenAPI\astxsdk\microsoft.vc90.crt.manifest]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\astxsdk/_microsoftvc90crt.manifest]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\astxsdk/_msvcr90.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\astxsdk/_stsdkex.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_default.lic]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_cancel_d.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_cancel_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_cancel_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_cancel_x.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_check_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_check_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_close_d.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_close_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_close_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_close_x.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_config_d.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_config_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_config_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_config_x.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_idpw_d.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_idpw_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_idpw_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_idpw_x.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_join_d.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_join_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_join_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_join_x.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_login_d.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_login_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_login_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_login_x.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_ok_d.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_ok_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_ok_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_ok_x.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_sign_d.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_sign_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_sign_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_sign_x.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_verclose_d.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_verclose_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_verclose_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_btn_verclose_x.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_c_btn_ok_d.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_c_btn_ok_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_c_btn_ok_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_c_btn_ok_x.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_cert_btn_ok_d.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_cert_btn_ok_f.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_cert_btn_ok_u.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_cert_btn_ok_x.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_config_api_bg.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_config_apism_bg.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_login_api_bg.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_login_apism_bg.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_staff_config_api_bg.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_staff_config_apism_bg.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_version_api_bg.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\image/_version_apism_bg.bmp]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_inicore_v2.3.32.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_inicore_v2.3.42.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_inicrypto20.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_inicrypto_v5.1.9.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_inicrypto_v5.1.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_inipki_v5.1.33.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_inipki_v5.1.40.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_inisafenet_v7.2.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_inisafetoolset.lic]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_inisafetoolset_v1.2.2.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_kdfapi2.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_kdfinj.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_khcrypt.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_khcryptcore.dll]
+[22:45:00]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_khcryptex.dll]
+[22:45:00]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:00]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:00]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:01]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:01]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:01]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:01]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:01]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:01]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:01]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:01]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:01]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:02]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:02]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:02]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:02]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:02]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:02]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:02]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:02]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:02]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\khopenapi.ocx was denied.)
+[22:45:03]:[G:\autoTrade\openapi\OpenAPI\khopenapi.ocx] 파일 삭제 실패 [183]
+[22:45:15]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_klib.dll]
+[22:45:15]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_librsadlx.dll]
+[22:45:15]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_npe55kb.npn]
+[22:45:15]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_npenkapp5policy_kiwoomcs.xml]
+[22:45:15]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_npenkappinstall5.dll]
+[22:45:15]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_npenkappinstall5message.xml]
+[22:45:15]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_npnv_kiwoom.conf]
+[22:45:15]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_nsldap32v11.dll]
+[22:45:15]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:15]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:15]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:15]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:15]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:16]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:16]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:16]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:16]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:16]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:16]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:16]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:16]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:16]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:17]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:17]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:17]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:17]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:17]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:17]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:17]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcommapi.dll was denied.)
+[22:45:17]:[G:\autoTrade\openapi\OpenAPI\opcommapi.dll] 파일 삭제 실패 [183]
+[22:46:28]:********************** Start **********************
+[22:46:28]:********************** Finish **********************
+[22:46:28]:CNKStarterApp::FirstInstance [OPVersionUp.exe] 실행 중
+[22:46:28]:CNKStarterApp::FirstInstance FALSE
+[22:46:28]:CNKStarterApp::InitInstance [OPStarter.exe] [OPVersionUp.exe] 실행 중으로 재 실행 방지 -> 종료
+[22:47:11]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:11]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:11]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:11]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:11]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:11]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:12]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:12]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:12]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:12]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:12]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:12]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:12]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:12]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:12]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:13]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:13]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:13]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:13]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:13]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:13]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 (error메시지 : Access to G:\autoTrade\openapi\OpenAPI\opcomms.dll was denied.)
+[22:47:13]:[G:\autoTrade\openapi\OpenAPI\opcomms.dll] 파일 삭제 실패 [183]
+[22:47:17]:>>>> 파일 삭제 성공 [G:\autoTrade\openapi\OpenAPI\opstarter.exe]
+[22:47:17]:>>>> 파일 이름변경 성공 [G:\autoTrade\openapi\OpenAPI\_opstarter.exe]->[G:\autoTrade\openapi\OpenAPI\opstarter.exe]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_opversionup.exe]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_signksc.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcomdcm.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcomdem.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcomdif.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcomdsc.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcommad.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcommcm.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcommem.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcommic.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcommif.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcommjv.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcommsc.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcommtm.exe]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skcommwb.exe]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skmagerapi.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_sksessiondll.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_sksmartcard32.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_skusbkey.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_stsdkex.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\system/_font.ini]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\system/_html.ini]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\system/_ip_api.dat]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\system/_jongacc.dat]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\system/_koarealtime.dat]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\system/_mstfilelist_api.ini]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\system/_realtime.dat]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\system/_security_apply.ini]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_unzdll.dll]
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter() : File Not Found [G:\autoTrade\openapi\OpenAPI\_zipdll.dll]
+[22:47:17]:initrsc.lst 에 있는 파일 중에 _ 붙은 파일 일부 실제 파일로 변경 실패.
+[22:47:17]:<==CNKVersionUpDlg::CompareStarter()
+[22:47:20]:<== CNKVersionUpDlg::OnOK
