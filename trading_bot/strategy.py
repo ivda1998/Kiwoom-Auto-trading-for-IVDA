@@ -169,28 +169,20 @@ class BreakoutStrategy:
             return SignalType.SELL_TARGET
 
         # 2. 트레일링 스탑 (수익 보존 스탑)
-        # 예: 수익이 +3% 이상 났을 경우, 5% 목표가에 도달하지 못하고 다시 3% 아래로 내려가면 익절
+        # 예: 수익이 +3% 이상 났을 경우, 5% 목표가에 도달하지 못하고 다시 3% 이하로 내려가면 익절
         TRAIL_ACTIVATION_RATE = config.TRAILING_STOP_RATE # 3% (설정값 기준)
         if state.highest_price >= state.entry_price * (1 + TRAIL_ACTIVATION_RATE):
             profit_preservation_price = state.entry_price * (1 + TRAIL_ACTIVATION_RATE)
-            if current_price < profit_preservation_price:
+            if current_price <= profit_preservation_price:
                 logger.info(
                     f"[Strategy] {candle.code} 트레일링 스탑 발동: "
-                    f"현재가({current_price:,}) < 보존가({profit_preservation_price:,.0f}) "
-                    f"[+3% 수익 달성 후 하락, +3% 이상 수익 확보]"
+                    f"현재가({current_price:,}) <= 보존가({profit_preservation_price:,.0f}) "
+                    f"[+3% 수익 달성 후 하락, +3% 수익 확보]"
                 )
                 state.phase = "WATCHING"
                 return SignalType.SELL_TRAILING
 
-        # 2.5 (옵션) 본절 스탑: 수익이 2% 이상 났다가 3%에 도달하지 못하고 진입가까지 떨어지면 본절 청산
-        if state.highest_price >= state.entry_price * (1 + 0.02) and state.highest_price < state.entry_price * (1 + TRAIL_ACTIVATION_RATE):
-            if current_price <= state.entry_price:
-                logger.info(
-                    f"[Strategy] {candle.code} 본절 스탑: "
-                    f"수익 발생 후 진입가({state.entry_price:,}) 이탈 방어"
-                )
-                state.phase = "WATCHING"
-                return SignalType.SELL_TRAILING
+
 
         # 3. 기존 손절: 진입가 대비 -STOP_LOSS_RATE(3%) 이탈
         if current_price < state.stoploss_price:
@@ -328,6 +320,13 @@ class BreakoutStrategy:
                     )
                     state.phase = "ENTERING"
                     return SignalType.BUY
+                elif strategy_type == 3:
+                    # 3번 전략: 3분봉 20MA 눌림 진입 대기
+                    logger.info(
+                        f"[Strategy] {candle.code} ★ 신고가 돌파 포착! "
+                        f"일봉기준가({state.daily_high:,}) < 현재돌파가({candle.close:,}) | "
+                        f"→ 3분봉 20MA ±{config.NEAR_HIGH_BUY_THRESHOLD:.0%} 눌림 진입 대기"
+                    )
                 else:
                     # 1번 전략: 기존 ±1% 근접 대기
                     logger.info(
@@ -340,20 +339,40 @@ class BreakoutStrategy:
 
         # 2. 눌림 (Pullback) 진입
         threshold = config.NEAR_HIGH_BUY_THRESHOLD
-        breakout = state.breakout_price
+        strategy_type = getattr(config, "ENTRY_STRATEGY_TYPE", 1)
 
-        # 현재가가 돌파가 기준 ±1% 이내인지 판별
-        proximity = abs(candle.close - breakout) / breakout
-        if proximity <= threshold:
-            state.phase = "ENTERING"
-            logger.info(
-                f"[Strategy] {candle.code} ★ 돌파 후 눌림 매수 신호! "
-                f"돌파가({breakout:,}) | 종가({candle.close:,}) "
-                f"근접도({proximity:.2%}) "
-                f"→ 진입가={candle.close:,} / "
-                f"예상손절가={round(candle.close * (1 - config.STOP_LOSS_RATE)):,}"
-            )
-            return SignalType.BUY
+        if strategy_type == 3:
+            # 3번 전략: 20MA 기준 눌림목 매수
+            ma_list = self._calculate_ma(all_candles, 20)
+            if not ma_list:
+                return SignalType.NONE  # 아직 20봉 데이터가 없음
+            ma20 = ma_list[-1]
+            proximity = abs(candle.close - ma20) / ma20
+            
+            if proximity <= threshold:
+                state.phase = "ENTERING"
+                logger.info(
+                    f"[Strategy] {candle.code} ★ 20MA 눌림 매수 신호! "
+                    f"20MA({ma20:,.0f}) | 종가({candle.close:,}) "
+                    f"근접도({proximity:.2%}) "
+                    f"→ 진입가={candle.close:,} / "
+                    f"예상손절가={round(candle.close * (1 - config.STOP_LOSS_RATE)):,}"
+                )
+                return SignalType.BUY
+        else:
+            # 1번 전략: 돌파가 기준 눌림목 매수
+            breakout = state.breakout_price
+            proximity = abs(candle.close - breakout) / breakout
+            if proximity <= threshold:
+                state.phase = "ENTERING"
+                logger.info(
+                    f"[Strategy] {candle.code} ★ 돌파 후 눌림 매수 신호! "
+                    f"돌파가({breakout:,}) | 종가({candle.close:,}) "
+                    f"근접도({proximity:.2%}) "
+                    f"→ 진입가={candle.close:,} / "
+                    f"예상손절가={round(candle.close * (1 - config.STOP_LOSS_RATE)):,}"
+                )
+                return SignalType.BUY
 
         return SignalType.NONE
 

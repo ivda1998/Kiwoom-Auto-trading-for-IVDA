@@ -385,6 +385,16 @@ class StockScanner:
         check_filters=False : 조건식 결과 종목 경로 — 조건식이 이미 선별했으므로
                               필터 없이 고점/거래대금 기본 정보만 수집
         """
+        # [ETF/ETN/SPAC 제외 로직]
+        if getattr(config, "EXCLUDE_SPAC_ETN_ETF", False):
+            if "스팩" in name or "ETN" in name:
+                logger.debug(f"[Scanner] 스팩/ETN 제외: {name}({code})")
+                return None
+            etf_prefixes = ("KODEX", "TIGER", "KBSTAR", "KINDEX", "ACE", "ARIRANG", "HANARO", "KOSEF", "SOL", "TIMEFOLIO", "FOCUS", "TREX", "마이티", "마이다스", "동부", "KTB", "흥국", "HANA", "히어로즈", "네비게이터", "파워", "유진", "HK", "WOORI")
+            if any(name.startswith(p) for p in etf_prefixes):
+                logger.debug(f"[Scanner] ETF 제외: {name}({code})")
+                return None
+                
         # 일봉 데이터 (ka10081)
         if not hasattr(self, "_daily_data_cache"):
             self._daily_data_cache = {}
@@ -462,6 +472,12 @@ class StockScanner:
             if surge_rate > 0.30:
                 return None
 
+        str_type = getattr(config, "ENTRY_STRATEGY_TYPE", 1)
+        if str_type == 2:
+            reason_str = f"전일종가돌파({dist_20:.1%}), 거래대금({avg_amount/1e8:.0f}억), 거래량({avg_volume:,.0f}주)"
+        else:
+            reason_str = f"20일고점근접({dist_20:.1%}), 거래대금({avg_amount/1e8:.0f}억), 거래량({avg_volume:,.0f}주)"
+            
         return {
             "code":          code,
             "name":          name,
@@ -473,7 +489,7 @@ class StockScanner:
             "high_60":       int(high_60),
             "dist_20":       round(dist_20, 4),
             "dist_60":       round(dist_60, 4),
-            "reason":        f"20일고점근접({dist_20:.1%}), 거래대금({avg_amount/1e8:.0f}억), 거래량({avg_volume:,.0f}주)",
+            "reason":        reason_str,
         }
 
     # ─────────────────────────────────────────
@@ -547,37 +563,102 @@ class StockScanner:
             amt   = c.get("avg_amount", 0)
             est_keep = 1 - _cfg.STOP_LOSS_RATE
             print(f"  {i:>2}. [{c['name']}({c['code']})]")
-            print(f"      현재가: {cur:,}원 | 20일고점: {h20:,}원 | 60일고점: {h60:,}원")
-            print(f"      고점 근접도: {d20:.1%} | 거래대금: {amt/1e8:.0f}억원/일")
+            str_type = getattr(_cfg, "ENTRY_STRATEGY_TYPE", 1)
+            if str_type == 2:
+                print(f"      현재가: {cur:,}원 | 전일종가: {h20:,}원")
+                print(f"      돌파 근접도(전일종가 기준): {d20:.1%} | 거래대금: {amt/1e8:.0f}억원/일")
+            else:
+                print(f"      현재가: {cur:,}원 | 20일고점: {h20:,}원 | 60일고점: {h60:,}원")
+                print(f"      고점 근접도: {d20:.1%} | 거래대금: {amt/1e8:.0f}억원/일")
             threshold_pct = _cfg.NEAR_HIGH_BUY_THRESHOLD * 100
-            print(f"      매수 조건: 20일/60일 신고가 ±{threshold_pct:.0f}% 이내 즉시 매수")
-            print(f"      예상 손절가: 진입가 × {est_keep:.0%} (진입 후 -{_cfg.STOP_LOSS_RATE:.0%})")
-            print(f"      대기 제한: {_cfg.WATCHING_TIMEOUT_CANDLES}봉 ({_cfg.WATCHING_TIMEOUT_CANDLES * _cfg.CANDLE_INTERVAL}분)")
+            
+            custom_targets = _cfg.get_custom_targets()
+            custom_conf = custom_targets.get(c['name']) or custom_targets.get(c['code'])
+            if custom_conf:
+                buy_min = custom_conf.get("buy_min", 0)
+                buy_max = custom_conf.get("buy_max", 0)
+                sl = custom_conf.get("stop_loss", -1)
+                tp = custom_conf.get("take_profit", -1)
+                
+                buy_str = f"{buy_min:,} ~ {buy_max:,}원 구간 매수" if buy_max > 0 else "지정 범위 없음"
+                sl_str = f"{sl:,}원" if sl > 0 else "미지정"
+                tp_str = f"{tp:,}원" if tp > 0 else "미지정"
+                
+                print(f"      [수동] 매수 조건: {buy_str}")
+                print(f"      [수동] 예상 손절가: {sl_str} / 목표가: {tp_str}")
+            else:
+                if str_type == 2:
+                    print(f"      매수 조건: 전일종가 돌파 시 다음 봉 시가 매수")
+                else:
+                    print(f"      매수 조건: 20일/60일 신고가 ±{threshold_pct:.0f}% 이내 즉시 매수")
+                print(f"      예상 손절가: 진입가 × {est_keep:.0%} (진입 후 -{_cfg.STOP_LOSS_RATE:.0%})")
+                print(f"      대기 제한: {_cfg.WATCHING_TIMEOUT_CANDLES}봉 ({_cfg.WATCHING_TIMEOUT_CANDLES * _cfg.CANDLE_INTERVAL}분)")
         print("  " + "─" * 58 + "\n")
 
 
 class MarketFilter:
     """
-    코스닥 지수 필터 - 시장 전체 하락 시 매매 중단
+    시장 필터 - 코스피 (KODEX 200 ETF 사용) 이동평균선(3일, 5일, 10일) 중 하나라도 우상향하는지 체크
     """
 
     def __init__(self, kiwoom):
         self.kiwoom = kiwoom
-        self._kosdaq_candles = []
-
-    def update(self, candles: list):
-        """3분봉 업데이트"""
-        self._kosdaq_candles = candles
+        self._is_bullish = True
+        self._last_update_ts = None
+        self._kospi_etf_code = "069500"  # KODEX 200
+        self.status_msg = "조회 대기 중"
 
     def is_bullish(self) -> bool:
         """
-        코스닥 3분봉 5MA가 상승 중이면 True
+        코스피 이동평균선 3일, 5일, 10일 중 최소 1개가 우상향인지 여부 반환.
+        (30분마다 실시간 갱신)
         """
-        if len(self._kosdaq_candles) < config.MARKET_FILTER_MA + 1:
-            return True  # 데이터 부족 시 허용
+        now_ts = time.time()
+        # 30분(1800초) 주기 갱신
+        if self._last_update_ts is None or (now_ts - self._last_update_ts) >= 1800:
+            self._update_market_status()
+            self._last_update_ts = now_ts
 
-        closes = [c["close"] for c in self._kosdaq_candles]
-        ma_now  = sum(closes[-config.MARKET_FILTER_MA:]) / config.MARKET_FILTER_MA
-        ma_prev = sum(closes[-(config.MARKET_FILTER_MA + 1):-1]) / config.MARKET_FILTER_MA
+        return self._is_bullish
 
-        return ma_now >= ma_prev
+    def _update_market_status(self):
+        try:
+            # 일봉 15개면 충분 (10일 MA + 전일 대비 비교용 11일분 등)
+            daily = self.kiwoom.get_daily_data(self._kospi_etf_code, count=20)
+            if daily is None or len(daily) < 15:
+                logger.warning("[MarketFilter] 코스피(ETF) 차트 조회 실패 → 임시 통과(True)")
+                self._is_bullish = True
+                return
+
+            close = daily["close"].values
+
+            def get_ma(period):
+                # 오늘 기준 산출MA
+                ma_today = sum(close[-period:]) / period
+                # 어제 기준 산출MA
+                ma_yest = sum(close[-(period+1):-1]) / period
+                return ma_today, ma_yest
+
+            ma3_tod, ma3_yes = get_ma(3)
+            ma5_tod, ma5_yes = get_ma(5)
+            ma10_tod, ma10_yes = get_ma(10)
+
+            is_bullish = (ma3_tod >= ma3_yes) or (ma5_tod >= ma5_yes) or (ma10_tod >= ma10_yes)
+            
+            self.status_msg = (
+                f"KODEX200 3MA({'상승' if ma3_tod >= ma3_yes else '하락'}), "
+                f"5MA({'상승' if ma5_tod >= ma5_yes else '하락'}), "
+                f"10MA({'상승' if ma10_tod >= ma10_yes else '하락'})"
+            )
+
+            logger.debug(
+                f"[MarketFilter] 시장 팩터 (KODEX 200) "
+                f"{self.status_msg} "
+                f"→ 매수 허용: {is_bullish}"
+            )
+            self._is_bullish = is_bullish
+
+        except Exception as e:
+            logger.error(f"[MarketFilter] 시장 팩터 업데이트 실패: {e}")
+            self.status_msg = f"조회 오류 ({e})"
+            self._is_bullish = True  # 오류 시에는 매수 기회 허용

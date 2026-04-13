@@ -26,7 +26,8 @@ class TradingBot:
     흐름: 로그인 → 종목 스캔 → 실시간 구독 → 봉 확정마다 전략 실행 → 청산
     """
 
-    def __init__(self):
+    def __init__(self, auto_mode=False):
+        self._auto_mode = auto_mode
         self.kiwoom = KiwoomAPI()
         self.risk = RiskManager(self.kiwoom)
         self.scanner = StockScanner(self.kiwoom)
@@ -55,6 +56,20 @@ class TradingBot:
         logger.info("[Bot] 트레이딩 봇 시작")
         logger.info(f"[Bot] 모드: {'모의투자' if config.IS_SIMULATION else '실계좌'}")
 
+        if self._auto_mode:
+            logger.info("[Bot] 자동 시작 (09:00 대기 모드)")
+            import time
+            from datetime import datetime
+            while True:
+                now_hm = datetime.now().strftime("%H:%M")
+                if config.TRADE_START_TIME <= now_hm < config.TRADE_END_TIME:
+                    break
+                elif now_hm >= config.TRADE_END_TIME:
+                    logger.info("[Bot] 이미 장이 종료된 시간(15:30 이후)이므로, 내일 다시 시도합니다.")
+                    return
+                logger.info(f"[Bot] 09:00까지 대기 중... (현재: {now_hm})")
+                time.sleep(60)
+
         # 키움 REST 토큰 발급
         if not self.kiwoom.login():
             logger.error("[Bot] 토큰 발급 실패 → 종료")
@@ -68,11 +83,18 @@ class TradingBot:
         # 기존 보유 종목 동기화
         self._sync_existing_positions()
 
-        # 진입 전략(1/2) 대화형 선택
-        self._choose_strategy_type()
+        if self._auto_mode:
+            logger.info(f"[Bot] 기본 진입 전략 사용: {getattr(config, 'ENTRY_STRATEGY_TYPE', 3)}번")
+        else:
+            # 진입 전략(1/2) 대화형 선택
+            self._choose_strategy_type()
 
-        # 대화형 조건식 선택 (CONDITION_INTERACTIVE=True 일 때)
-        self._choose_condition()
+        if self._auto_mode:
+            logger.info(f"[Bot] 기본 조건식 사용: {getattr(config, 'CONDITION_NAME', '')}")
+            config._interactive_selected = False
+        else:
+            # 대화형 조건식 선택 (CONDITION_INTERACTIVE=True 일 때)
+            self._choose_condition()
 
         # 후보 종목 초기 스캔 (일봉 기준)
         self._run_initial_scan()
@@ -94,28 +116,29 @@ class TradingBot:
     # ─────────────────────────────────────────
     def _choose_strategy_type(self):
         """
-        진입 전략 (1번/2번) 사용자 선택
+        진입 전략 (1/2/3) 사용자 선택
         """
         print("\n" + "=" * 55)
         print("  [진입 전략 선택]")
-        print("  1) 20일/60일 신고가 돌파 및 ±1% 내 눌림 매수 (기존)")
+        print("  1) 20일/60일 신고가 돌파 및 ±1% 내 눌림 매수")
         print("  2) 3분봉이 전일 종가를 상향 돌파 시, 다음 봉 시가 매수")
+        print("  3) 돌파 후 20MA 눌림 매수 (기본)")
         print("=" * 55)
         
         while True:
             try:
-                choice = input("  번호 입력 (1 또는 2, 기본=1): ").strip()
+                choice = input("  번호 입력 (1, 2, 3 중 하나, 기본=3): ").strip()
                 if not choice:
-                    config.ENTRY_STRATEGY_TYPE = 1
+                    config.ENTRY_STRATEGY_TYPE = 3
                     break
-                elif choice in ("1", "2"):
+                elif choice in ("1", "2", "3"):
                     config.ENTRY_STRATEGY_TYPE = int(choice)
                     break
                 else:
-                    print("  1 또는 2를 입력하세요.")
+                    print("  1, 2, 3 중 하나를 입력하세요.")
             except (EOFError, KeyboardInterrupt):
-                config.ENTRY_STRATEGY_TYPE = 1
-                print("\n  입력 취소 → 기본(1번) 전략 사용")
+                config.ENTRY_STRATEGY_TYPE = 3
+                print("\n  입력 취소 → 기본(3번) 전략 사용")
                 break
         
         logger.info(f"[Bot] 선택된 진입 전략: {config.ENTRY_STRATEGY_TYPE}번")
@@ -421,9 +444,12 @@ class TradingBot:
             on_candle_close=lambda candle, _code=code: self._on_candle_close(candle)
         )
         self.kiwoom.subscribe_realtime(code)
+        str_type = getattr(config, "ENTRY_STRATEGY_TYPE", 1)
+        ref_label = "전일종가" if str_type == 2 else "20일고점"
+        
         logger.info(
             f"[Bot] 장 중 신규 등록 완료: {name}({code}) | "
-            f"20일고점근접({result['dist_20']:.1%}), "
+            f"{ref_label}근접({result['dist_20']:.1%}), "
             f"거래대금({result['avg_amount']/1e8:.0f}억)"
         )
 
@@ -431,11 +457,33 @@ class TradingBot:
         est_keep_rate = 1 - config.STOP_LOSS_RATE
         threshold_pct = config.NEAR_HIGH_BUY_THRESHOLD * 100
         print(f"\n  ✅ 신규 후보 등록: [{name}({code})]")
-        print(f"     현재가: {result['current_price']:,}원 | 20일고점: {result['high_20']:,}원 | 60일고점: {result.get('high_60', 0):,}원")
-        print(f"     고점 근접도(20일): {result['dist_20']:.1%} | 거래대금: {result['avg_amount']/1e8:.0f}억원/일")
-        print(f"     매수 조건: 20일/60일 신고가 ±{threshold_pct:.0f}% 이내 즉시 매수")
-        print(f"     예상 손절가: 진입가 × {est_keep_rate:.0%} (진입 후 -{config.STOP_LOSS_RATE:.0%})")
-        print(f"     대기 제한: {config.WATCHING_TIMEOUT_CANDLES}봉 ({config.WATCHING_TIMEOUT_CANDLES * config.CANDLE_INTERVAL}분)")
+        if str_type == 2:
+            print(f"     현재가: {result['current_price']:,}원 | 전일종가: {result['high_20']:,}원")
+            print(f"     전일종가 근접도: {result['dist_20']:.1%} | 거래대금: {result['avg_amount']/1e8:.0f}억원/일")
+        else:
+            print(f"     현재가: {result['current_price']:,}원 | 20일고점: {result['high_20']:,}원 | 60일고점: {result.get('high_60', 0):,}원")
+            print(f"     고점 근접도(20일): {result['dist_20']:.1%} | 거래대금: {result['avg_amount']/1e8:.0f}억원/일")
+        
+        custom_targets = config.get_custom_targets()
+        custom_conf = custom_targets.get(name) or custom_targets.get(code)
+        if custom_conf:
+            buy_min = custom_conf.get("buy_min", 0)
+            buy_max = custom_conf.get("buy_max", 0)
+            sl = custom_conf.get("stop_loss", -1)
+            tp = custom_conf.get("take_profit", -1)
+            buy_str = f"{buy_min:,} ~ {buy_max:,}원 구간 매수" if buy_max > 0 else "지정 범위 없음"
+            sl_str = f"{sl:,}원" if sl > 0 else "미지정"
+            tp_str = f"{tp:,}원" if tp > 0 else "미지정"
+            
+            print(f"     [수동] 매수 조건: {buy_str}")
+            print(f"     [수동] 예상 손절가: {sl_str} / 목표가: {tp_str}")
+        else:
+            if str_type == 2:
+                print(f"     매수 조건: 전일종가 돌파 시 다음 봉 시가 매수")
+            else:
+                print(f"     매수 조건: 20일/60일 신고가 ±{threshold_pct:.0f}% 이내 즉시 매수")
+            print(f"     예상 손절가: 진입가 × {est_keep_rate:.0%} (진입 후 -{config.STOP_LOSS_RATE:.0%})")
+            print(f"     대기 제한: {config.WATCHING_TIMEOUT_CANDLES}봉 ({config.WATCHING_TIMEOUT_CANDLES * config.CANDLE_INTERVAL}분)")
         self._print_status_board()
 
     # ─────────────────────────────────────────
@@ -468,9 +516,9 @@ class TradingBot:
             return  # 포지션 보유 종목은 아래 진입 체크 생략
 
         # ── 후보 종목 실시간 진입 체크 (봉 마감 없이 즉시) ──
-        if not self._in_trade_hours() or self.risk.is_halted:
+        if not self._can_buy_time() or self.risk.is_halted:
             # 시간 외 차단 로그 (종목당 1분에 1번만 출력)
-            if not self._in_trade_hours():
+            if not self._can_buy_time():
                 last_t = self._last_out_of_hours_log.get(code, 0)
                 now_ts = time.time()
                 if now_ts - last_t >= 60:
@@ -530,7 +578,10 @@ class TradingBot:
         signal = self.strategy.on_candle_close(candle, candles)
 
         if signal == SignalType.BUY:
-            self._execute_buy(code, candle)
+            if self._can_buy_time():
+                self._execute_buy(code, candle)
+            else:
+                logger.debug(f"[Bot] 매수 신호 발생했으나 매수 제한 시간({getattr(config, 'BUY_END_TIME', '15:10')}) 경과로 진입 보류")
         elif signal == SignalType.TIMEOUT:
             self._remove_candidate(code)
 
@@ -583,10 +634,22 @@ class TradingBot:
                 price=price,
                 reason=buy_reason
             )
-            print(f"\n  🟢 매수 체결: [{name}({code})] "
-                  f"{pos.qty}주 @ {price:,}원 | "
-                  f"손절가: {pos.stoploss_price:,}원 | "
-                  f"익절: 5MA 음전환\n")
+            if is_custom:
+                custom_conf = custom_targets.get(name) or custom_targets.get(code)
+                sl = custom_conf.get("stop_loss", -1)
+                tp = custom_conf.get("take_profit", -1)
+                sl_str = f"{sl:,}원" if sl > 0 else "미지정"
+                tp_str = f"{tp:,}원" if tp > 0 else "미지정"
+                
+                print(f"\n  🟢 수동 매수 체결: [{name}({code})] "
+                      f"{pos.qty}주 @ {price:,}원 | "
+                      f"손절가: {sl_str} | "
+                      f"익절: {tp_str}\n")
+            else:
+                print(f"\n  🟢 매수 체결: [{name}({code})] "
+                      f"{pos.qty}주 @ {price:,}원 | "
+                      f"손절가: {pos.stoploss_price:,}원 | "
+                      f"익절: 5MA 음전환\n")
             self._print_status_board()
         else:
             # 매수 실패 시 WATCHING으로 복구 (다음 틱/봉에서 재시도 가능)
@@ -687,6 +750,12 @@ class TradingBot:
         print("\n" + "═" * 62)
         print(f"  📊 매매 현황  [{now}]  {hours_str}")
         print("═" * 62)
+        
+        market_msg = self.market_filter.status_msg
+        market_pass = "✅ 허용 (매수 가능)" if self.market_filter.is_bullish() else "⏳ 대기 (마켓 역배열로 매수 보류)"
+        print(f"  📈 시장 팩터: {market_msg}")
+        print(f"  🚥 매수 상태: {market_pass}")
+        print("═" * 62)
 
         # ── 대기 중 ──
         print(f"  ⏳ 대기 중 ({len(waiting)}종목)")
@@ -708,11 +777,24 @@ class TradingBot:
                     # 각 기준 고점에 대한 현재 근접도 계산
                     dist_20 = abs(cur_p - high_20) / high_20 * 100 if high_20 > 0 else 0
                     dist_60 = abs(cur_p - high_60) / high_60 * 100 if high_60 > 0 else 0
-                    phase_str = (
-                        f"신고가 대기 ({cnt}봉 경과"
-                        + (f", {timeout_in}봉 후 취소" if timeout_in > 0 else ", 취소 임박")
-                        + f") | 20일고점 -{dist_20:.1f}% / 60일고점 -{dist_60:.1f}%"
-                    )
+                    strategy_type = getattr(config, "ENTRY_STRATEGY_TYPE", 1)
+                    if strategy_type == 2:
+                        phase_str = (
+                            f"돌파 대기 ({cnt}봉 경과"
+                            + (f", {timeout_in}봉 후 취소" if timeout_in > 0 else ", 취소 임박")
+                            + f") | 전일종가 -{dist_20:.1f}%"
+                        )
+                    elif strategy_type == 3:
+                        if state.is_breakout:
+                            phase_str = f"20MA 눌림 대기 ({cnt}봉 경과" + (f", {timeout_in}봉 후 취소" if timeout_in > 0 else ", 취소 임박") + ")"
+                        else:
+                            phase_str = f"돌파 대기 ({cnt}봉 경과" + (f", {timeout_in}봉 후 취소" if timeout_in > 0 else ", 취소 임박") + f") | 일봉고점 -{min(dist_20, dist_60):.1f}%"
+                    else:
+                        phase_str = (
+                            f"신고가 대기 ({cnt}봉 경과"
+                            + (f", {timeout_in}봉 후 취소" if timeout_in > 0 else ", 취소 임박")
+                            + f") | 20일고점 -{dist_20:.1f}% / 60일고점 -{dist_60:.1f}%"
+                        )
                 else:
                     phase_str = phase
 
@@ -725,7 +807,12 @@ class TradingBot:
                     avg_amt = c.get("avg_amount", 0)
                     amt_str = f"5일평균 거래대금: {avg_amt/1e8:.0f}억원/일" if avg_amt > 0 else "거래대금: 집계 중..."
                 print(f"    [{name}({code})] {phase_str}")
-                print(f"      현재가: {cur_price:,}원 | 20일고점: {c.get('high_20', 0):,}원 | {amt_str}")
+                if strategy_type == 2:
+                    print(f"      현재가: {cur_price:,}원 | 전일종가: {c.get('high_20', 0):,}원 | {amt_str}")
+                elif strategy_type == 3:
+                    print(f"      현재가: {cur_price:,}원 | 일봉기준가: {state.daily_high:,}원 | {amt_str}")
+                else:
+                    print(f"      현재가: {cur_price:,}원 | 20일고점: {c.get('high_20', 0):,}원 | {amt_str}")
         else:
             print("    (없음)")
 
@@ -740,7 +827,17 @@ class TradingBot:
                 print(f"    [{pos.name}({code})]")
                 print(f"      진입가: {pos.entry_price:,}원 | 현재가: {cur_price:,}원 | "
                       f"손익: {pnl_emoji}{abs(pnl):,.0f}원 ({pnl_rate:+.2%})")
-                print(f"      손절가: {pos.stoploss_price:,}원 | 익절 조건: 5MA 음전환")
+                
+                custom_targets = config.get_custom_targets()
+                custom_conf = custom_targets.get(pos.name) or custom_targets.get(code)
+                if custom_conf:
+                    sl = custom_conf.get("stop_loss", -1)
+                    tp = custom_conf.get("take_profit", -1)
+                    sl_str = f"{sl:,}원(수동)" if sl > 0 else "미지정"
+                    tp_str = f"{tp:,}원(수동)" if tp > 0 else "미지정"
+                    print(f"      손절가: {sl_str} | 익절 제한: {tp_str}")
+                else:
+                    print(f"      손절가: {pos.stoploss_price:,}원 | 익절 조건: 5MA 음전환")
         else:
             print("    (없음)")
 
@@ -765,6 +862,26 @@ class TradingBot:
         
         print("═" * 62 + "\n")
 
+    def _change_condition_runtime(self, new_cond_name: str):
+        """런타임 중에 검색식을 변경합니다."""
+        cond_list = self.kiwoom.get_condition_list()
+        target_seq = None
+        for c in cond_list:
+            if c["name"] == new_cond_name:
+                target_seq = c["seq"]
+                break
+
+        if not target_seq:
+            logger.error(f"[Bot] '{new_cond_name}' 조건식을 찾을 수 없습니다.")
+            return
+
+        config.CONDITION_NAME = new_cond_name
+        config.CONDITION_SEQ = target_seq
+        logger.info(f"[Bot] 조건식을 '{new_cond_name}' (seq={target_seq}) 으로 변경합니다.")
+        
+        # 새 조건식 실시간 등록 (기존 종목은 후보에서 유지되고 새 종목이 계속 편입됨)
+        self._start_condition_polling()
+
     # ─────────────────────────────────────────
     # 메인 루프 (1분 주기)
     # ─────────────────────────────────────────
@@ -779,12 +896,8 @@ class TradingBot:
                 now_hm = datetime.now().strftime("%H:%M")
                 now_ts = time.time()
 
-                # 주기적 조건식 갱신 (장중에만)
-                if self._in_trade_hours():
-                    scan_interval = getattr(config, "SCAN_UPDATE_INTERVAL", 180)
-                    if now_ts - self._last_scan_time >= scan_interval:
-                        self._last_scan_time = now_ts
-                        self._update_candidates()
+                # 주기적 조건식 실시간 재스캔은 봇 초기 구동 시 1회 및 실시간 조건식 푸시(ka10173)로 대체하므로, 
+                # 여기서 반복적으로 폴링하는 것은 API 한도(1700회) 초과를 유발하여 삭제함.
 
                 # 일괄 청산 (15:19)
                 clear_time = getattr(config, "CLEAR_TIME", "15:19")
@@ -840,10 +953,31 @@ class TradingBot:
                             # 모의투자 REST API 429(Too Many Requests) 방지를 위해 1.5초 간격 유지
                             time.sleep(1.5)
 
+                # 수동 강제청산 확인
+                import os
+                if os.path.exists("force_sell.txt"):
+                    logger.warning("[Bot] 수동 강제청산 명령어 감지 (force_sell.txt)")
+                    self._clear_all_positions(reason="수동강제청산")
+                    try:
+                        os.remove("force_sell.txt")
+                    except Exception as e:
+                        logger.error(f"[Bot] force_sell.txt 삭제 실패: {e}")
+
+                # 수동 검색식 변경 감지
+                if os.path.exists("change_condition.txt"):
+                    try:
+                        with open("change_condition.txt", "r", encoding="utf-8") as f:
+                            new_cond_name = f.read().strip()
+                        os.remove("change_condition.txt")
+                        if new_cond_name:
+                            logger.info(f"[Bot] 수동 조건식 변경 감지: {new_cond_name}")
+                            self._change_condition_runtime(new_cond_name)
+                    except Exception as e:
+                        logger.error(f"[Bot] 조건식 변경 실패: {e}")
+
                 # 주기적 상태 보드 출력 (60초 간격)
                 if now_ts - last_print >= 60:
-                    if self._candidates or self.executor.get_all_positions():
-                        self._print_status_board()
+                    self._print_status_board()
                     last_print = now_ts
 
                 wait_time = 5 if config.IS_SIMULATION else 60
@@ -924,10 +1058,44 @@ class TradingBot:
         le = config.LUNCH_END
         return (s <= now <= e) and not (ls <= now <= le)
 
+    def _can_buy_time(self) -> bool:
+        now = datetime.now().strftime("%H:%M")
+        s = config.TRADE_START_TIME
+        e = getattr(config, "BUY_END_TIME", "15:10")
+        ls = config.LUNCH_START
+        le = config.LUNCH_END
+        return (s <= now <= e) and not (ls <= now <= le)
+
 
 # ─────────────────────────────────────────
 # 진입점
 # ─────────────────────────────────────────
 if __name__ == "__main__":
-    bot = TradingBot()
-    bot.start()
+    import argparse
+    import time
+    from datetime import datetime
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--auto", action="store_true", help="Auto start at 09:00 with default strategy and condition")
+    args = parser.parse_args()
+
+    if args.auto:
+        while True:
+            bot = TradingBot(auto_mode=True)
+            bot.start()
+            
+            # 장 종료(15:30) 이후 프로그램이 끝나면, 자정까지 대기했다가 다시 루프를 돌게 합니다.
+            print("\n[Bot] 오늘 장이 종료되었습니다. 다음 거래일을 위해 자정까지 대기합니다...")
+            while True:
+                now_hm = datetime.now().strftime("%H:%M")
+                if "15:30" <= now_hm <= "23:59":
+                    time.sleep(600)  # 15:30 ~ 23:59 구간은 10분씩 백그라운드 대기
+                else: 
+                    # 자정(00:00)이 지나면 now_hm 값이 작아지므로 루프 탈출
+                    break
+            
+            print("[Bot] 새 날이 밝았습니다. 봇을 재가동합니다.\n")
+            time.sleep(5)
+    else:
+        bot = TradingBot(auto_mode=False)
+        bot.start()

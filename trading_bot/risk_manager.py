@@ -106,6 +106,12 @@ class RiskManager:
         invest_amount = min(invest_amount, available * 0.95)  # 가용금액 95% 이내
 
         qty = int(invest_amount / price)
+        
+        # 1주의 가격이 종목당 할당 금액(invest_amount)보다 비싸서 수량이 0으로 계산되더라도,
+        # 계좌의 총 가용금액(available * 0.95)으로 1주를 살 수 있는 여력이 있다면 최소 1주 매수 허용
+        if qty == 0 and price <= available * 0.95:
+            qty = 1
+
         return max(qty, 0)
 
     def get_available_capital(self) -> float:

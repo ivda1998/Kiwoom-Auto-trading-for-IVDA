@@ -10,6 +10,7 @@ APP_KEY    = _os.environ.get("KIWOOM_APP_KEY",    "YOUR_APP_KEY")
 APP_SECRET = _os.environ.get("KIWOOM_APP_SECRET", "YOUR_APP_SECRET")
 ACCOUNT_NUMBER = _os.environ.get("KIWOOM_ACCOUNT", "81202949")
 IS_SIMULATION = _os.environ.get("IS_SIMULATION", "true").lower() == "true"
+EXCLUDE_SPAC_ETN_ETF = _os.environ.get("EXCLUDE_SPAC_ETN_ETF", "false").lower() == "true"
 
 # 모의투자 / 실서버 도메인 자동 선택 (키움 REST API)
 API_BASE_URL = (
@@ -29,6 +30,7 @@ WS_BASE_URL = (
 # 매매 시간 설정
 # ─────────────────────────────────────────
 TRADE_START_TIME = "09:00"
+BUY_END_TIME     = "15:10"
 TRADE_END_TIME   = "15:30"
 LUNCH_START      = "11:50"
 LUNCH_END        = "13:00"
@@ -132,16 +134,16 @@ PULLBACK_MAX_CANDLES = 3
 PULLBACK_PROXIMITY   = 0.01
 WATCHING_TIMEOUT_CANDLES = 20  # WATCHING 상태 최대 봉 수 (3분봉 기준 = 60분)
 NEAR_HIGH_BUY_THRESHOLD  = 0.01  # 신고가(20일/60일) ±1% 이내 즉시 매수
-ENTRY_STRATEGY_TYPE      = 1     # 진입 전략 (1: 기존 20/60일 돌파/눌림, 2: 전일 종가 상향 돌파 시 시가 진입)
+ENTRY_STRATEGY_TYPE      = 3     # 진입 전략 (1: 20/60일 돌파/눌림, 2: 전일 종가 돌파 시초가, 3: 돌파 후 20MA 눌림)
 
 # ─────────────────────────────────────────
 # 청산 조건
 # ─────────────────────────────────────────
 MA_EXIT_PERIOD = 5            # 익절: 3분봉 N개 이동평균 기울기 음전환 시 청산
 STOP_LOSS_RATE = 0.03         # 손절: 진입가 대비 -3% 이탈 시 청산
-TARGET_PROFIT_RATE = 0.05     # 익절: 5% 도달 시 목표가 자동 청산
+TARGET_PROFIT_RATE = 0.07     # 익절: 전략 3 기준 7% 자동 청산 (기본 5%)
 TRAILING_STOP_RATE = 0.03     # 트레일링: 최고가 대비 3% 하락 시 청산
-CLEAR_TIME         = "15:19"  # 시간청산: 15시 19분에 전량 시장가 청산
+CLEAR_TIME         = "15:20"  # 시간청산: 15시 20분 동시호가 주문 (15시 30분 종가 청산)
 
 # ─────────────────────────────────────────
 # 리스크 관리
@@ -149,7 +151,7 @@ CLEAR_TIME         = "15:19"  # 시간청산: 15시 19분에 전량 시장가 �
 POSITION_RATIO       = 0.10   # 종목당 자본 10%
 MAX_POSITIONS        = 10     # 동시 최대 보유 종목 10개
 MAX_DAILY_LOSS_RATE  = 0.02
-MAX_TRADES_PER_STOCK = 1
+MAX_TRADES_PER_STOCK = 5      # 전략 3 등 중복(재) 매수 허용 (기본 1 -> 5로 확장)
 
 # ─────────────────────────────────────────
 # 시가총액 필터

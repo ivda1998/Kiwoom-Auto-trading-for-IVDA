@@ -365,6 +365,12 @@ class KiwoomAPI:
         ka10099 - 시장별 전종목 기본정보 리스트
         market: "0"=코스피, "10"=코스닥
         """
+        if not hasattr(self, "_all_stocks_cache"):
+            self._all_stocks_cache = {}
+            
+        if market in self._all_stocks_cache:
+            return self._all_stocks_cache[market]
+
         stocks = []
         cont_yn  = "N"
         next_key = ""
@@ -383,6 +389,7 @@ class KiwoomAPI:
                     cd = item.get("code", "")
                     if not cd:
                         continue
+                    cd = cd.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ").strip()
                     raw_price = str(item.get("lastPrice", "0")).lstrip("0") or "0"
                     try:
                         last_price = int(raw_price)
@@ -408,6 +415,7 @@ class KiwoomAPI:
                 break
 
         logger.info(f"[KiwoomAPI] 종목목록: {len(stocks)}개 ({market})")
+        self._all_stocks_cache[market] = stocks
         return stocks
 
     # ─────────────────────────────────────────
@@ -543,7 +551,11 @@ class KiwoomAPI:
 
         Returns: [{"seq": "0", "name": "조건1"}, ...]
         """
-        self._ensure_ws()
+        try:
+            self._ensure_ws()
+        except TimeoutError as e:
+            logger.error(f"[KiwoomAPI] 조건식 목록 조회 중 WS 타임아웃: {e}")
+            return []
 
         # 루프 스레드에서 Future 생성
         future_holder = []
@@ -619,7 +631,11 @@ class KiwoomAPI:
 
         Returns: [{"code": "000020", "name": "동화약품"}, ...]
         """
-        self._ensure_ws()
+        try:
+            self._ensure_ws()
+        except TimeoutError as e:
+            logger.error(f"[KiwoomAPI] 조건검색 중 WS 타임아웃: {e}")
+            return []
 
         future_holder = []
 
@@ -692,8 +708,8 @@ class KiwoomAPI:
                     item.get("stk_cd") or
                     ""
                 ).strip()
-                # "A000400" → "000400" (숫자 부분만 추출)
-                code = raw_code.lstrip("A").strip() if raw_code else ""
+                # "A000400", "Q610071" → "000400", "610071" (영문 접두사 제거)
+                code = raw_code.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ").strip() if raw_code else ""
                 name = (
                     item.get("302")   or          # ka10172 실제 필드명
                     item.get("name")  or
@@ -710,7 +726,11 @@ class KiwoomAPI:
         ka10173 - 조건식 실시간 등록 (search_type=1, WebSocket push).
         이후 편입/이탈 발생 시 _condition_callbacks 가 호출됨.
         """
-        self._ensure_ws()
+        try:
+            self._ensure_ws()
+        except TimeoutError as e:
+            logger.error(f"[KiwoomAPI] 조건식 실시간 등록 중 WS 타임아웃: {e}")
+            return
         req = json.dumps({
             "trnm":        "CNSRREQ",
             "seq":         seq,
@@ -747,6 +767,8 @@ class KiwoomAPI:
 
             if not code:
                 continue
+                
+            code = code.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ").strip()
 
             for cb in self._condition_callbacks:
                 try:
