@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from logger import setup_logger
 from kiwoom_api import KiwoomAPI
-from scanner import StockScanner
+from skills.scan_skill import StockScanner
 
 logger = setup_logger("run_scan")
 

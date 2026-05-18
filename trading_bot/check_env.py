@@ -31,9 +31,13 @@ except Exception as e:
 print("\n[소스 문법 검사]")
 base = os.path.dirname(os.path.abspath(__file__))
 files = [
-    "config.py","logger.py","kiwoom_api.py","scanner.py",
-    "data_handler.py","strategy.py","execution.py",
-    "risk_manager.py","backtest_engine.py","main.py"
+    "config.py","logger.py","kiwoom_api.py",
+    "risk_manager.py","backtest_engine.py","main.py",
+    "harness/base_harness.py","harness/kiwoom_harness.py",
+    "hooks/risk_hook.py","hooks/market_filter_hook.py",
+    "agents/breakout_agent.py",
+    "skills/market_data_skill.py","skills/execution_skill.py","skills/scan_skill.py",
+    "strategy.py"
 ]
 all_ok = True
 for f in files:

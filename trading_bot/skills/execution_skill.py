@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict
 
 import config
+from .base_skill import BaseSkill
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +35,13 @@ class Position:
         return (current_price - self.entry_price) / self.entry_price
 
 
-class OrderExecutor:
+class ExecutionSkill(BaseSkill):
     """
-    실제 주문 전송 + 포지션 상태 관리
+    실제 주문 전송 + 포지션 상태 관리 (Execution Skill)
     """
 
     def __init__(self, kiwoom, risk_manager):
-        self.kiwoom = kiwoom
+        super().__init__(kiwoom)
         self.risk = risk_manager
         self._positions: Dict[str, Position] = {}
         self._today_traded: set = set()   # 오늘 매매한 종목 코드
@@ -207,3 +208,13 @@ class OrderExecutor:
         if self._screen_counter > 9999:
             self._screen_counter = 1000
         return self._screen_counter
+
+    def execute(self, action_type: str, *args, **kwargs):
+        """
+        BaseSkill 구현부 (필요 시 Agent가 일관된 인터페이스로 호출하도록 작성)
+        """
+        if action_type == "BUY":
+            return self.buy(*args, **kwargs)
+        elif action_type == "SELL":
+            return self.sell(*args, **kwargs)
+        return False

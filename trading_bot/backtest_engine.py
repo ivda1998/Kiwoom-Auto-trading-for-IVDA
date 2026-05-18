@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 
 import config
-from data_handler import Candle
+from skills.market_data_skill import Candle
 from strategy import BreakoutStrategy, SignalType
 
 logger = logging.getLogger(__name__)

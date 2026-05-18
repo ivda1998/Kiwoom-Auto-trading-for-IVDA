@@ -1,4 +1,4 @@
-# main.py - 트레이딩 봇 메인 진입점 (REST API 버전)
+# main.py - 트레이딩 봇 메인 진입점 (하네스 기반 에이전트 아키텍처 버전)
 # OCX / PyQt5 의존성 완전 제거
 
 import sys
@@ -10,11 +10,17 @@ from datetime import datetime
 import config
 from logger import setup_logger, TradeLogger
 from kiwoom_api import KiwoomAPI
-from scanner import StockScanner, MarketFilter
-from data_handler import DataManager
-from strategy import BreakoutStrategy, SignalType
-from execution import OrderExecutor
 from risk_manager import RiskManager
+from strategy import SignalType
+
+# 하네스, 스킬, 훅, 에이전트 임포트
+from skills.scan_skill import StockScanner, MarketFilter
+from skills.market_data_skill import MarketDataSkill
+from skills.execution_skill import ExecutionSkill
+from hooks.risk_hook import RiskHook
+from hooks.market_filter_hook import MarketFilterHook
+from harness.kiwoom_harness import KiwoomHarness
+from agents.breakout_agent import BreakoutTradingAgent
 
 # 로거 초기화
 logger = setup_logger("main")
@@ -22,44 +28,62 @@ logger = setup_logger("main")
 
 class TradingBot:
     """
-    메인 트레이딩 봇 (REST API + WebSocket 기반)
-    흐름: 로그인 → 종목 스캔 → 실시간 구독 → 봉 확정마다 전략 실행 → 청산
+    메인 트레이딩 봇 (하네스 기반 에이전트 아키텍처)
+    역할: 하네스, 에이전트, 스킬, 훅 조립 및 메인 런타임 제어
     """
 
     def __init__(self, auto_mode=False):
         self._auto_mode = auto_mode
+        self._candidates = []
+        self._running = False
+        self._stop_event = threading.Event()
+        self._cleared_today = False
+        self._last_sim_poll = {}
+        self._last_scan_time = 0.0
+
+        # 1. 핵심 컴포넌트 초기화
         self.kiwoom = KiwoomAPI()
         self.risk = RiskManager(self.kiwoom)
         self.scanner = StockScanner(self.kiwoom)
         self.market_filter = MarketFilter(self.kiwoom)
-        self.data_mgr = DataManager(self.kiwoom)
-        self.strategy = BreakoutStrategy()
         self.trade_logger = TradeLogger()
-        self.executor = OrderExecutor(self.kiwoom, self.risk)
 
-        self._candidates = []
-        self._running = False
-        self._stop_event = threading.Event()
-        self._condition_seq: str = ""              # ka10171에서 확인한 seq
-        self._known_condition_codes: set = set()   # 이미 전략에 등록된 조건식 종목
-        self._last_prices: dict = {}               # 종목별 마지막 틱 가격 (상태 보드용)
-        self._today_amount: dict = {}              # 종목별 오늘 누적 거래대금 (price×volume, 실시간)
-        self._last_out_of_hours_log: dict = {}     # 시간 외 매수 차단 로그 중복 방지 (종목별 마지막 로그 시각)
-        self._last_sim_poll: dict = {}             # 모의투자 틱 폴링용 타이머 (종목별)
-        self._last_scan_time: float = 0.0          # 마지막 스캔 주기 체크용 타이머
+        # 2. 하네스 생성
+        self.harness = KiwoomHarness(self.kiwoom)
+
+        # 3. 스킬 등록
+        self.execution_skill = ExecutionSkill(self.kiwoom, self.risk)
+        self.market_data_skill = MarketDataSkill(self.kiwoom)
+        self.harness.register_skill("execution", self.execution_skill)
+        self.harness.register_skill("market_data", self.market_data_skill)
+
+        # 4. 훅 등록
+        self.risk_hook = RiskHook(self.risk)
+        self.market_filter_hook = MarketFilterHook(self.market_filter)
+        self.harness.register_hook(self.risk_hook)
+        self.harness.register_hook(self.market_filter_hook)
+
+        # 5. 에이전트 등록
+        self.agent = BreakoutTradingAgent()
+        self.harness.register_agent(self.agent)
+
+        # 6. 하네스 런타임 공유 컨텍스트 설정
+        self.harness.update_context("risk", self.risk)
+        self.harness.update_context("market_filter", self.market_filter)
+        self.harness.update_context("scanner", self.scanner)
+        self.harness.update_context("candidates", self._candidates)
+        self.harness.update_context("print_status_board", self._print_status_board)
 
     # ─────────────────────────────────────────
     # 시작
     # ─────────────────────────────────────────
     def start(self):
         logger.info("=" * 60)
-        logger.info("[Bot] 트레이딩 봇 시작")
+        logger.info("[Bot] 하네스 기반 트레이딩 봇 시작")
         logger.info(f"[Bot] 모드: {'모의투자' if config.IS_SIMULATION else '실계좌'}")
 
         if self._auto_mode:
             logger.info("[Bot] 자동 시작 (09:00 대기 모드)")
-            import time
-            from datetime import datetime
             while True:
                 now_hm = datetime.now().strftime("%H:%M")
                 if config.TRADE_START_TIME <= now_hm < config.TRADE_END_TIME:
@@ -86,7 +110,7 @@ class TradingBot:
         if self._auto_mode:
             logger.info(f"[Bot] 기본 진입 전략 사용: {getattr(config, 'ENTRY_STRATEGY_TYPE', 3)}번")
         else:
-            # 진입 전략(1/2) 대화형 선택
+            # 진입 전략(1/2/3) 대화형 선택
             self._choose_strategy_type()
 
         if self._auto_mode:
@@ -102,9 +126,6 @@ class TradingBot:
         # 장 중 실시간 조건식 모니터링 시작 (ka10173)
         self._start_condition_polling()
 
-        # 실시간 틱 콜백 등록
-        self.kiwoom.add_tick_callback(self._on_tick)
-
         self._running = True
         logger.info("[Bot] 매매 대기 중...")
 
@@ -115,9 +136,6 @@ class TradingBot:
     # 대화형 전략 및 조건식 선택
     # ─────────────────────────────────────────
     def _choose_strategy_type(self):
-        """
-        진입 전략 (1/2/3) 사용자 선택
-        """
         print("\n" + "=" * 55)
         print("  [진입 전략 선택]")
         print("  1) 20일/60일 신고가 돌파 및 ±1% 내 눌림 매수")
@@ -144,16 +162,10 @@ class TradingBot:
         logger.info(f"[Bot] 선택된 진입 전략: {config.ENTRY_STRATEGY_TYPE}번")
 
     def _choose_condition(self):
-        """
-        CONDITION_INTERACTIVE=True 일 때 콘솔에서 조건식을 선택.
-        선택한 조건식이 결과 없으면 재선택 메뉴 표시 (루프).
-        선택 결과는 config.CONDITION_NAME / CONDITION_SEQ 를 런타임에 덮어씀.
-        """
         if not getattr(config, "CONDITION_INTERACTIVE", False):
             config._interactive_selected = False
             return
 
-        # WS 연결 후 조건식 목록 조회
         logger.info("[Bot] 조건식 목록 조회 중...")
         cond_list = self.kiwoom.get_condition_list()
 
@@ -165,22 +177,16 @@ class TradingBot:
         while True:
             selected = self._show_condition_menu(cond_list)
 
-            # 0(자동) 또는 Enter → config 기본값 사용, 폴백 허용
             if selected is None:
-                logger.info(
-                    f"[Bot] 조건식 자동 선택: "
-                    f"'{getattr(config, 'CONDITION_NAME', '')}'"
-                )
+                logger.info(f"[Bot] 조건식 자동 선택: '{getattr(config, 'CONDITION_NAME', '')}'")
                 config._interactive_selected = False
                 return
 
-            # config 런타임 덮어쓰기 (파일은 변경하지 않음)
             config.CONDITION_NAME = selected["name"]
             config.CONDITION_SEQ  = selected["seq"]
             config._interactive_selected = True
             logger.info(f"[Bot] 조건식 선택: '{selected['name']}' (seq={selected['seq']})")
 
-            # 선택한 조건식 즉시 결과 확인 (ka10172)
             stocks = self.kiwoom.search_by_condition(selected["seq"])
             count  = len(stocks) if stocks else 0
             logger.info(f"[Bot] 조건식 '{selected['name']}' 결과: {count}개")
@@ -189,7 +195,6 @@ class TradingBot:
                 print(f"  → '{selected['name']}' 결과: {count}개 종목\n")
                 return
 
-            # 결과 없음 → 재선택 메뉴
             print(f"\n  선택한 조건식 '{selected['name']}' 결과: 0개")
             print("  ─────────────────────────────────────────")
             print("  어떻게 하시겠습니까?")
@@ -205,7 +210,7 @@ class TradingBot:
                     sub = "2"
 
                 if sub == "1":
-                    break           # 바깥 while True 루프로 → 조건식 재선택
+                    break
                 elif sub == "2":
                     logger.info("[Bot] 빈 후보로 계속 진행 (실시간 편입 대기)")
                     return
@@ -216,14 +221,6 @@ class TradingBot:
                     print("  1, 2, 3 중 하나를 입력하세요.")
 
     def _show_condition_menu(self, cond_list: list):
-        """
-        조건식 목록을 콘솔에 표시하고 사용자 선택을 받아 반환.
-
-        Returns:
-            dict  - 선택한 조건식 {"name": ..., "seq": ...}
-            None  - 0(자동) 선택
-        """
-        # 현재 설정된 이름의 기본 인덱스 계산
         default_idx = 0
         cur_name = getattr(config, "CONDITION_NAME", "").strip()
         for i, cond in enumerate(cond_list, start=1):
@@ -260,14 +257,13 @@ class TradingBot:
         return cond_list[choice - 1]
 
     def _sync_existing_positions(self):
-        """프로그램 재시작 시 기존에 보유 중인 종목을 불러와 상태 복구"""
         positions = self.kiwoom.get_positions()
         for p in positions:
             code = p["code"]
             name = p["name"]
             
             # 1) 포지션 복구
-            self.executor.sync_position(
+            self.execution_skill.sync_position(
                 code=code,
                 name=name,
                 qty=p["qty"],
@@ -275,8 +271,8 @@ class TradingBot:
             )
             
             # 2) 전략 내에 상태 강제 진입(ENTERED) 처리 (기준고점 0으로)
-            self.strategy.init_stock(code, name=name, high_20=0, high_60=0)
-            self.strategy.notify_entered(code, entry_price=p["entry_price"])
+            self.agent.strategy.init_stock(code, name=name, high_20=0, high_60=0)
+            self.agent.strategy.notify_entered(code, entry_price=p["entry_price"])
             
             # 3) 감시 대상(candidates) 등록 (틱 조회를 위해 필요)
             if code not in [c["code"] for c in self._candidates]:
@@ -288,9 +284,9 @@ class TradingBot:
                 })
                 
             # 4) 데이터 매니저 초기화 및 실시간 구독
-            self.data_mgr.init_stock(
+            self.market_data_skill.init_stock(
                 code,
-                on_candle_close=lambda candle, _code=code: self._on_candle_close(candle)
+                on_candle_close=lambda candle, _code=code: self.harness.broadcast_event("CANDLE", candle)
             )
             if not config.IS_SIMULATION:
                 self.kiwoom.subscribe_realtime(code)
@@ -304,12 +300,10 @@ class TradingBot:
         now_hm   = datetime.now().strftime("%H:%M")
         in_market = config.TRADE_START_TIME <= now_hm <= config.TRADE_END_TIME
         if in_market:
-            logger.info(
-                f"[Bot] 후보 종목 스캔 (장 중 실행 {now_hm} | 일봉 기준 — "
-                "오늘 장 중 데이터가 포함될 수 있음)"
-            )
+            logger.info(f"[Bot] 후보 종목 스캔 (장 중 실행 {now_hm} | 일봉 기준 — 오늘 장 중 데이터 포함)")
         else:
             logger.info(f"[Bot] 후보 종목 스캔 (장 시작 전 {now_hm} | 전일 종가 기준)")
+        
         new_cands = self.scanner.run_scan()
         self.scanner.print_summary()
 
@@ -318,12 +312,12 @@ class TradingBot:
             code = c["code"]
             if code not in existing_codes:
                 self._candidates.append(c)
-                # 전략에 종목 등록
-                self.strategy.init_stock(code, name=c["name"], high_20=c.get("high_20", 0), high_60=c.get("high_60", 0))
+                # 에이전트 내 전략 종목 등록
+                self.agent.strategy.init_stock(code, name=c["name"], high_20=c.get("high_20", 0), high_60=c.get("high_60", 0))
                 # 분봉 데이터 초기화
-                self.data_mgr.init_stock(
+                self.market_data_skill.init_stock(
                     code,
-                    on_candle_close=lambda candle, _code=code: self._on_candle_close(candle)
+                    on_candle_close=lambda candle, _code=code: self.harness.broadcast_event("CANDLE", candle)
                 )
                 if not config.IS_SIMULATION:
                     self.kiwoom.subscribe_realtime(code)
@@ -332,42 +326,10 @@ class TradingBot:
         self._last_scan_time = time.time()
         self._print_status_board()
 
-    def _update_candidates(self):
-        """장중 주기적 조건식 재선별 스캔 (새로운 종목만 편입)"""
-        logger.info("[Bot] 주기적 조건식 실시간 재스캔 중...")
-        new_cands = self.scanner.run_scan()
-        if not new_cands:
-            return
-
-        added_count = 0
-        existing_codes = {c["code"] for c in self._candidates}
-        
-        for c in new_cands:
-            code = c["code"]
-            if code not in existing_codes:
-                self._candidates.append(c)
-                # 전략 등록
-                self.strategy.init_stock(code, name=c["name"], high_20=c["high_20"], high_60=c["high_60"])
-                self.data_mgr.init_stock(
-                    code,
-                    on_candle_close=lambda candle, _code=code: self._on_candle_close(candle)
-                )
-                self.kiwoom.subscribe_realtime(code)
-                added_count += 1
-                logger.info(f"[Bot] 주기적 스캔 신규 편입: {c['name']}({code})")
-        
-        if added_count > 0:
-            print(f"\n  🔍 (주기적 수색) 신규 조건 만족 종목 {added_count}개 감시 추가 완료\n")
-            self._print_status_board()
-
     # ─────────────────────────────────────────
     # 장 중 조건식 실시간 폴링 (ka10173)
     # ─────────────────────────────────────────
     def _start_condition_polling(self):
-        """
-        ka10173 실시간 등록 (WebSocket push 방식).
-        폴링 루프 없이 WS 콜백으로 편입/이탈 이벤트를 수신.
-        """
         use_condition = bool(
             getattr(config, "CONDITION_NAME", "").strip()
             or getattr(config, "CONDITION_SEQ",  "").strip()
@@ -396,313 +358,23 @@ class TradingBot:
             logger.warning("[Bot] 조건식 seq를 찾을 수 없음 → 실시간 등록 생략")
             return
 
-        self._condition_seq = seq
-        self._known_condition_codes = {c["code"] for c in self._candidates}
-
-        # 실시간 편입/이탈 콜백 등록 후 ka10173 WebSocket push 등록
-        self.kiwoom.add_condition_callback(self._on_condition_event)
+        # 하네스가 WebSocket callbacks을 통해 이벤트를 수신하도록 설정
         self.kiwoom.register_condition_realtime(seq)
         logger.info(f"[Bot] 조건식 실시간 등록 완료 (seq={seq})")
 
-    def _on_condition_event(self, code: str, name: str, action: str):
-        """
-        조건식 편입(action='IN') / 이탈(action='OUT') WebSocket 콜백.
-        """
-        if action == "IN":
-            self._on_condition_in(code, name)
-        else:
-            logger.debug(f"[Bot] 조건식 이탈: {name}({code})")
-
-    def _on_condition_in(self, code: str, name: str):
-        """
-        장 중 조건식에 신규 편입된 종목을 전략에 동적 등록.
-        ka10081 일봉 세부 검증 후 통과 시 BreakoutStrategy에 추가.
-        """
-        logger.info(f"[Bot] 조건식 신규 편입: {name}({code})")
-
-        # 이미 전략에 등록된 종목 스킵
-        if self.strategy.get_state(code) is not None:
-            logger.debug(f"[Bot] {code} 이미 등록됨, 스킵")
-            return
-
-        # 최대 후보 수 초과 시 스킵
-        if len(self._candidates) >= config.MAX_CANDIDATES:
-            logger.debug(f"[Bot] 최대 후보 수({config.MAX_CANDIDATES}) 초과, {code} 스킵")
-            return
-
-        # ka10081 일봉 기본 정보 수집 (조건식이 이미 선별 → 추가 필터 없음)
-        result = self.scanner._evaluate_stock(code, name, check_filters=False)
-        if not result:
-            logger.debug(f"[Bot] {code} 일봉 데이터 수집 실패 → 등록 안함")
-            return
-
-        # 전략·데이터 등록
-        self._candidates.append(result)
-        self.strategy.init_stock(code, name=name, high_20=result["high_20"], high_60=result["high_60"])
-        self.data_mgr.init_stock(
-            code,
-            on_candle_close=lambda candle, _code=code: self._on_candle_close(candle)
-        )
-        self.kiwoom.subscribe_realtime(code)
-        str_type = getattr(config, "ENTRY_STRATEGY_TYPE", 1)
-        ref_label = "전일종가" if str_type == 2 else "20일고점"
-        
-        logger.info(
-            f"[Bot] 장 중 신규 등록 완료: {name}({code}) | "
-            f"{ref_label}근접({result['dist_20']:.1%}), "
-            f"거래대금({result['avg_amount']/1e8:.0f}억)"
-        )
-
-        # 콘솔에 상세 정보 출력
-        est_keep_rate = 1 - config.STOP_LOSS_RATE
-        threshold_pct = config.NEAR_HIGH_BUY_THRESHOLD * 100
-        print(f"\n  ✅ 신규 후보 등록: [{name}({code})]")
-        if str_type == 2:
-            print(f"     현재가: {result['current_price']:,}원 | 전일종가: {result['high_20']:,}원")
-            print(f"     전일종가 근접도: {result['dist_20']:.1%} | 거래대금: {result['avg_amount']/1e8:.0f}억원/일")
-        else:
-            print(f"     현재가: {result['current_price']:,}원 | 20일고점: {result['high_20']:,}원 | 60일고점: {result.get('high_60', 0):,}원")
-            print(f"     고점 근접도(20일): {result['dist_20']:.1%} | 거래대금: {result['avg_amount']/1e8:.0f}억원/일")
-        
-        custom_targets = config.get_custom_targets()
-        custom_conf = custom_targets.get(name) or custom_targets.get(code)
-        if custom_conf:
-            buy_min = custom_conf.get("buy_min", 0)
-            buy_max = custom_conf.get("buy_max", 0)
-            sl = custom_conf.get("stop_loss", -1)
-            tp = custom_conf.get("take_profit", -1)
-            buy_str = f"{buy_min:,} ~ {buy_max:,}원 구간 매수" if buy_max > 0 else "지정 범위 없음"
-            sl_str = f"{sl:,}원" if sl > 0 else "미지정"
-            tp_str = f"{tp:,}원" if tp > 0 else "미지정"
-            
-            print(f"     [수동] 매수 조건: {buy_str}")
-            print(f"     [수동] 예상 손절가: {sl_str} / 목표가: {tp_str}")
-        else:
-            if str_type == 2:
-                print(f"     매수 조건: 전일종가 돌파 시 다음 봉 시가 매수")
-            else:
-                print(f"     매수 조건: 20일/60일 신고가 ±{threshold_pct:.0f}% 이내 즉시 매수")
-            print(f"     예상 손절가: 진입가 × {est_keep_rate:.0%} (진입 후 -{config.STOP_LOSS_RATE:.0%})")
-            print(f"     대기 제한: {config.WATCHING_TIMEOUT_CANDLES}봉 ({config.WATCHING_TIMEOUT_CANDLES * config.CANDLE_INTERVAL}분)")
-        self._print_status_board()
-
     # ─────────────────────────────────────────
-    # 실시간 틱 처리
+    # 일괄 청산
     # ─────────────────────────────────────────
-    def _on_tick(self, tick: dict):
-        code = tick["code"]
-        price = tick["price"]
-
-        # 마지막 가격 캐시 업데이트 (상태 보드용)
-        self._last_prices[code] = price
-
-        # 실시간 누적 거래대금 갱신 (price × volume)
-        volume = tick.get("volume", 0)
-        self._today_amount[code] = self._today_amount.get(code, 0) + price * volume
-
-        # DataManager에 틱 전달 (봉 집계)
-        self.data_mgr.on_tick(tick)
-
-        # 포지션 보유 중인 종목: 실시간 청산 체크
-        if self.executor.has_position(code):
-            candles = self.data_mgr.get_candles(code)
-            current = self.data_mgr.get_builder(code).get_current_candle()
-            if current:
-                signal = self.strategy.on_candle_update(
-                    current, candles, price
-                )
-                if signal in (SignalType.SELL_PROFIT, SignalType.SELL_STOP, SignalType.SELL_TARGET, SignalType.SELL_TRAILING):
-                    self._execute_sell(code, price, signal)
-            return  # 포지션 보유 종목은 아래 진입 체크 생략
-
-        # ── 후보 종목 실시간 진입 체크 (봉 마감 없이 즉시) ──
-        if not self._can_buy_time() or self.risk.is_halted:
-            # 시간 외 차단 로그 (종목당 1분에 1번만 출력)
-            if not self._can_buy_time():
-                last_t = self._last_out_of_hours_log.get(code, 0)
-                now_ts = time.time()
-                if now_ts - last_t >= 60:
-                    state_chk = self.strategy.get_state(code)
-                    if state_chk and state_chk.phase == "WATCHING":
-                        logger.debug(
-                            f"[Bot] {code} 시간 외 → 매수 차단 "
-                            f"(거래 시작: {config.TRADE_START_TIME})"
-                        )
-                        self._last_out_of_hours_log[code] = now_ts
-            return
-
-        state = self.strategy.get_state(code)
-        if not (state and state.phase == "WATCHING"):
-            return
-
-        # 1번 전략: 20/60일 신고가 ±NEAR_HIGH_BUY_THRESHOLD 이내 → 즉시 매수
-        if getattr(config, "ENTRY_STRATEGY_TYPE", 1) == 1:
-            for high in [state.high_20, state.high_60]:
-                if high > 0 and abs(price - high) / high <= config.NEAR_HIGH_BUY_THRESHOLD:
-                    if not self.market_filter.is_bullish():
-                        logger.debug("[Bot] 시장 필터: 코스닥 하락 → 실시간 진입 보류")
-                        break
-                    state.phase = "ENTERING"  # 중복 진입 방지
-                    logger.info(
-                        f"[Bot] {code} 실시간 진입 시도: {price:,}원 / "
-                        f"기준고점 {high:,}원 ({abs(price - high) / high:.2%})"
-                    )
-                    self._execute_buy_at(code, price)
-                    break
-
-    # ─────────────────────────────────────────
-    # 봉 확정 처리
-    # ─────────────────────────────────────────
-    def _on_candle_close(self, candle):
-        code = candle.code
-
-        # 매매 시간 체크
-        if not self._in_trade_hours():
-            return
-
-        # 시장 필터
-        if not self.market_filter.is_bullish():
-            logger.debug("[Bot] 시장 필터: 코스닥 하락 → 진입 보류")
-            return
-
-        # 리스크 체크
-        if self.risk.is_halted:
-            return
-
-        # 이미 포지션 보유 중이면 청산 로직만
-        if self.executor.has_position(code):
-            return
-
-        # 전략 신호 판단
-        candles = self.data_mgr.get_candles(code)
-        signal = self.strategy.on_candle_close(candle, candles)
-
-        if signal == SignalType.BUY:
-            if self._can_buy_time():
-                self._execute_buy(code, candle)
-            else:
-                logger.debug(f"[Bot] 매수 신호 발생했으나 매수 제한 시간({getattr(config, 'BUY_END_TIME', '15:10')}) 경과로 진입 보류")
-        elif signal == SignalType.TIMEOUT:
-            self._remove_candidate(code)
-
-    # ─────────────────────────────────────────
-    # 매수 실행
-    # ─────────────────────────────────────────
-    def _execute_buy(self, code: str, candle):
-        """봉 확정 시 매수 (on_candle_close 콜백에서 호출)"""
-        self._execute_buy_at(code, candle.close)
-
-    def _execute_buy_at(self, code: str, price: int):
-        """
-        실제 매수 실행 (틱/봉 공통).
-        - 봉 확정 진입: _execute_buy() → _execute_buy_at(candle.close)
-        - 실시간 틱 진입: _on_tick() → _execute_buy_at(tick_price)
-        매수 실패 시 state.phase를 WATCHING으로 복구해 다음 기회 유지.
-        """
-        state = self.strategy.get_state(code)
-        if not state:
-            return
-
-        cand = next((c for c in self._candidates if c["code"] == code), None)
-        name = cand["name"] if cand else code
-        stoploss = round(price * (1 - config.STOP_LOSS_RATE))
-
-        success = self.executor.buy(
-            code=code,
-            name=name,
-            current_price=price,
-            stoploss_price=stoploss
-        )
-
-        custom_targets = config.get_custom_targets()
-        is_custom = bool(custom_targets.get(name) or custom_targets.get(code))
-        
-        if is_custom:
-            buy_reason = "수동지정매수"
-        else:
-            if getattr(config, "ENTRY_STRATEGY_TYPE", 1) == 2:
-                buy_reason = "전일종가돌파매수"
-            else:
-                buy_reason = "신고가근접진입"
-
-        if success:
-            self.strategy.notify_entered(code, price)
-            pos = self.executor.get_position(code)
-            self.trade_logger.log_trade(
-                code=code, name=name, side="BUY",
-                qty=pos.qty,
-                price=price,
-                reason=buy_reason
-            )
-            if is_custom:
-                custom_conf = custom_targets.get(name) or custom_targets.get(code)
-                sl = custom_conf.get("stop_loss", -1)
-                tp = custom_conf.get("take_profit", -1)
-                sl_str = f"{sl:,}원" if sl > 0 else "미지정"
-                tp_str = f"{tp:,}원" if tp > 0 else "미지정"
-                
-                print(f"\n  🟢 수동 매수 체결: [{name}({code})] "
-                      f"{pos.qty}주 @ {price:,}원 | "
-                      f"손절가: {sl_str} | "
-                      f"익절: {tp_str}\n")
-            else:
-                print(f"\n  🟢 매수 체결: [{name}({code})] "
-                      f"{pos.qty}주 @ {price:,}원 | "
-                      f"손절가: {pos.stoploss_price:,}원 | "
-                      f"익절: 5MA 음전환\n")
-            self._print_status_board()
-        else:
-            # 매수 실패 시 WATCHING으로 복구 (다음 틱/봉에서 재시도 가능)
-            state.phase = "WATCHING"
-
-    # ─────────────────────────────────────────
-    # 매도 실행
-    # ─────────────────────────────────────────
-    def _execute_sell(self, code: str, current_price: float,
-                      signal: SignalType):
-        pos = self.executor.get_position(code)
-        if not pos:
-            return
-
-        if signal == SignalType.SELL_PROFIT:
-            reason = "5MA음전환"
-        elif signal == SignalType.SELL_TARGET:
-            reason = "목표가청산"
-        elif signal == SignalType.SELL_TRAILING:
-            reason = "트레일링스탑"
-        else:
-            reason = "손절"
-            
-        pnl = pos.pnl(current_price)
-        pnl_rate = pos.pnl_rate(current_price)
-
-        success = self.executor.sell(code, current_price, reason)
-        if success:
-            self.trade_logger.log_trade(
-                code=code, name=pos.name, side="SELL",
-                qty=pos.qty, price=current_price,
-                pnl=pnl, pnl_rate=pnl_rate, reason=reason
-            )
-            self.strategy.reset_stock(code)
-            
-            if signal == SignalType.SELL_STOP:
-                emoji = "🔴"
-            elif signal in (SignalType.SELL_PROFIT, SignalType.SELL_TARGET):
-                emoji = "🟢"
-            else:
-                emoji = "🟡"
-                
-            print(f"\n  {emoji} 매도 체결: [{pos.name}({code})] "
-                  f"진입가: {pos.entry_price:,}원 → 매도가: {current_price:,}원 | "
-                  f"손익: {pnl:+,.0f}원 ({pnl_rate:+.2%}) | 사유: {reason}\n")
-            self._print_status_board()
-
     def _clear_all_positions(self, reason: str = "일괄청산"):
         logger.info(f"[Bot] 전량 청산 시작: {reason}")
-        positions = self.executor.get_all_positions()
+        positions = self.execution_skill.get_all_positions()
+        
+        last_prices = self.harness.get_context().get("last_prices", {})
+
         for code, pos in list(positions.items()):
-            cur_price = self._last_prices.get(code, pos.entry_price)
-            success = self.executor.sell(code, cur_price, reason)
+            cur_price = last_prices.get(code, pos.entry_price)
+            # 하네스를 거쳐 매도 진행
+            success = self.harness.execute_action(self.agent, "execution", "SELL", code, cur_price, reason)
             if success:
                 pnl = pos.pnl(cur_price)
                 pnl_rate = pos.pnl_rate(cur_price)
@@ -711,31 +383,16 @@ class TradingBot:
                     qty=pos.qty, price=cur_price,
                     pnl=pnl, pnl_rate=pnl_rate, reason=reason
                 )
-                self.strategy.reset_stock(code)
+                self.agent.strategy.reset_stock(code)
                 print(f"\n  ⏰ 일괄 청산 체결: [{pos.name}({code})] 사유: {reason}\n")
-        self._print_status_board()
-
-    # ─────────────────────────────────────────
-    # 후보 제거 (WATCHING 타임아웃)
-    # ─────────────────────────────────────────
-    def _remove_candidate(self, code: str):
-        """WATCHING 타임아웃 → 후보 목록에서 제거 및 구독 해제"""
-        cand = next((c for c in self._candidates if c["code"] == code), None)
-        name = cand["name"] if cand else code
-        logger.info(f"[Bot] 대기 타임아웃 → 후보 제거: {name}({code})")
-        print(f"\n  ⏰ [{name}({code})] 대기 타임아웃 ({config.WATCHING_TIMEOUT_CANDLES}봉 경과) → 후보 목록에서 제거\n")
-        self._candidates = [c for c in self._candidates if c["code"] != code]
-        self.kiwoom.unsubscribe_realtime(code)
-        self.strategy.remove_stock(code)
         self._print_status_board()
 
     # ─────────────────────────────────────────
     # 실시간 상태 대시보드
     # ─────────────────────────────────────────
     def _print_status_board(self):
-        """현재 매매 현황을 콘솔에 출력 (대기/보유/손익 요약)"""
         now = datetime.now().strftime("%H:%M:%S")
-        positions = self.executor.get_all_positions()
+        positions = self.execution_skill.get_all_positions()
 
         # 대기 중 종목 (후보 중 보유 포지션 없는 종목)
         waiting = [c for c in self._candidates if c["code"] not in positions]
@@ -759,11 +416,15 @@ class TradingBot:
 
         # ── 대기 중 ──
         print(f"  ⏳ 대기 중 ({len(waiting)}종목)")
+        
+        last_prices = self.harness.get_context().setdefault("last_prices", {})
+        today_amount = self.harness.get_context().setdefault("today_amount", {})
+
         if waiting:
             for c in waiting:
                 code  = c["code"]
                 name  = c["name"]
-                state = self.strategy.get_state(code)
+                state = self.agent.strategy.get_state(code)
                 if state is None:
                     continue
                 phase      = state.phase
@@ -773,8 +434,7 @@ class TradingBot:
                 if phase == "WATCHING":
                     high_20   = state.high_20
                     high_60   = state.high_60
-                    cur_p     = self._last_prices.get(code, c.get("current_price", 0))
-                    # 각 기준 고점에 대한 현재 근접도 계산
+                    cur_p     = last_prices.get(code, c.get("current_price", 0))
                     dist_20 = abs(cur_p - high_20) / high_20 * 100 if high_20 > 0 else 0
                     dist_60 = abs(cur_p - high_60) / high_60 * 100 if high_60 > 0 else 0
                     strategy_type = getattr(config, "ENTRY_STRATEGY_TYPE", 1)
@@ -798,15 +458,15 @@ class TradingBot:
                 else:
                     phase_str = phase
 
-                cur_price = self._last_prices.get(code, c.get("current_price", 0))
-                # 실시간 누적 거래대금 우선 표시, 없으면 스캔 시점의 5일 평균
-                today_amt = self._today_amount.get(code, 0)
+                cur_price = last_prices.get(code, c.get("current_price", 0))
+                today_amt = today_amount.get(code, 0)
                 if today_amt > 0:
                     amt_str = f"오늘 거래대금: {today_amt/1e8:.1f}억원"
                 else:
                     avg_amt = c.get("avg_amount", 0)
                     amt_str = f"5일평균 거래대금: {avg_amt/1e8:.0f}억원/일" if avg_amt > 0 else "거래대금: 집계 중..."
                 print(f"    [{name}({code})] {phase_str}")
+                strategy_type = getattr(config, "ENTRY_STRATEGY_TYPE", 1)
                 if strategy_type == 2:
                     print(f"      현재가: {cur_price:,}원 | 전일종가: {c.get('high_20', 0):,}원 | {amt_str}")
                 elif strategy_type == 3:
@@ -820,7 +480,7 @@ class TradingBot:
         print(f"\n  💰 보유 중 ({len(positions)}종목)")
         if positions:
             for code, pos in positions.items():
-                cur_price = self._last_prices.get(code, pos.entry_price)
+                cur_price = last_prices.get(code, pos.entry_price)
                 pnl      = (cur_price - pos.entry_price) * pos.qty
                 pnl_rate = (cur_price - pos.entry_price) / pos.entry_price if pos.entry_price else 0
                 pnl_emoji = "▲" if pnl >= 0 else "▼"
@@ -863,7 +523,6 @@ class TradingBot:
         print("═" * 62 + "\n")
 
     def _change_condition_runtime(self, new_cond_name: str):
-        """런타임 중에 검색식을 변경합니다."""
         cond_list = self.kiwoom.get_condition_list()
         target_seq = None
         for c in cond_list:
@@ -879,25 +538,18 @@ class TradingBot:
         config.CONDITION_SEQ = target_seq
         logger.info(f"[Bot] 조건식을 '{new_cond_name}' (seq={target_seq}) 으로 변경합니다.")
         
-        # 새 조건식 실시간 등록 (기존 종목은 후보에서 유지되고 새 종목이 계속 편입됨)
+        # 새 조건식 실시간 등록
         self._start_condition_polling()
 
     # ─────────────────────────────────────────
     # 메인 루프 (1분 주기)
     # ─────────────────────────────────────────
     def _main_loop(self):
-        """
-        주기적 상태 체크 + 장 종료 감지
-        모의투자의 경우 WebSocket 실시간 틱(REG)이 지원되지 않으므로 REST로 가짜 틱 폴링
-        """
         last_print = 0.0
         try:
             while self._running and not self._stop_event.is_set():
                 now_hm = datetime.now().strftime("%H:%M")
                 now_ts = time.time()
-
-                # 주기적 조건식 실시간 재스캔은 봇 초기 구동 시 1회 및 실시간 조건식 푸시(ka10173)로 대체하므로, 
-                # 여기서 반복적으로 폴링하는 것은 API 한도(1700회) 초과를 유발하여 삭제함.
 
                 # 일괄 청산 (15:19)
                 clear_time = getattr(config, "CLEAR_TIME", "15:19")
@@ -912,30 +564,32 @@ class TradingBot:
                     self._on_market_close()
                     break
 
-                # 모의투자 전용 REST 틱 폴링 (2분/3분 간격 동적)
+                # 모의투자 전용 REST 틱 폴링
                 if config.IS_SIMULATION and self._in_trade_hours() and self._candidates:
                     target_codes = [
                         c["code"] for c in self._candidates
-                        if (self.strategy.get_state(c["code"]) and 
-                            self.strategy.get_state(c["code"]).phase == "WATCHING")
-                        or self.executor.has_position(c["code"])
+                        if (self.agent.strategy.get_state(c["code"]) and 
+                            self.agent.strategy.get_state(c["code"]).phase == "WATCHING")
+                        or self.execution_skill.has_position(c["code"])
                     ]
+                    
+                    last_prices = self.harness.get_context().get("last_prices", {})
+
                     for code in target_codes:
                         last_poll = self._last_sim_poll.get(code, 0.0)
-                        
-                        has_pos = self.executor.has_position(code)
+                        has_pos = self.execution_skill.has_position(code)
                         is_near = False
                         
                         if not has_pos:
-                            state = self.strategy.get_state(code)
-                            last_price = self._last_prices.get(code, 0)
+                            state = self.agent.strategy.get_state(code)
+                            last_price = last_prices.get(code, 0)
                             if state and last_price > 0:
                                 for high in [state.high_20, state.high_60]:
                                     if high > 0 and abs(last_price - high) / high <= 0.02:
                                         is_near = True
                                         break
                             else:
-                                is_near = True # 가격 정보가 없으면 빠른 갱신
+                                is_near = True
                         
                         interval = 150 if (has_pos or is_near) else 240
                         
@@ -949,8 +603,8 @@ class TradingBot:
                                     "volume": 0,
                                     "time": datetime.now().strftime("%H%M%S")
                                 }
-                                self._on_tick(fake_tick)
-                            # 모의투자 REST API 429(Too Many Requests) 방지를 위해 1.5초 간격 유지
+                                # 하네스를 통해 틱 브로드캐스트
+                                self.harness.broadcast_event("TICK", fake_tick)
                             time.sleep(1.5)
 
                 # 수동 강제청산 확인
@@ -997,14 +651,12 @@ class TradingBot:
         logger.info("[Bot] 장 종료 처리 시작")
 
         if force_sell:
-            # 미청산 포지션 강제 청산 (단, 수동 지정 종목 CUSTOM_TARGETS은 홀딩 정책)
             custom_targets = config.get_custom_targets()
             today_dt = datetime.now()
 
-            for code, pos in list(self.executor.get_all_positions().items()):
+            for code, pos in list(self.execution_skill.get_all_positions().items()):
                 custom_conf = custom_targets.get(pos.name) or custom_targets.get(code)
                 if custom_conf:
-                    # 텔레그램 연동 등의 보존기한(holding_days) 처리 로직
                     holding_days = custom_conf.get("holding_days", 0)
                     created_at_str = custom_conf.get("created_at", "")
                     
@@ -1014,7 +666,7 @@ class TradingBot:
                             elapsed_days = (today_dt - created_dt).days
                             if elapsed_days > holding_days:
                                 logger.warning(f"[Bot] 장마감 강제 청산 (수동종목 보존기한 {holding_days}일 만료): {pos.name}({code})")
-                                self.executor.sell(code, pos.entry_price, "보존만료")
+                                self.execution_skill.sell(code, pos.entry_price, "보존만료")
                                 continue
                         except Exception as e:
                             logger.error(f"[Bot] 수동종목({pos.name}) 날짜 파싱 오류: {e}")
@@ -1023,7 +675,7 @@ class TradingBot:
                     continue
                 
                 logger.warning(f"[Bot] 장마감 강제 청산: {pos.name}({code})")
-                self.executor.sell(code, pos.entry_price, "장마감")
+                self.execution_skill.sell(code, pos.entry_price, "장마감")
         else:
             logger.info("[Bot] 포지션 유지 (사용자 중단으로 인한 강제청산 생략)")
 
@@ -1040,7 +692,7 @@ class TradingBot:
         )
 
         # 리셋
-        self.executor.reset_daily()
+        self.execution_skill.reset_daily()
         self.risk.reset_daily()
         self._running = False
         self._stop_event.set()
@@ -1084,14 +736,12 @@ if __name__ == "__main__":
             bot = TradingBot(auto_mode=True)
             bot.start()
             
-            # 장 종료(15:30) 이후 프로그램이 끝나면, 자정까지 대기했다가 다시 루프를 돌게 합니다.
             print("\n[Bot] 오늘 장이 종료되었습니다. 다음 거래일을 위해 자정까지 대기합니다...")
             while True:
                 now_hm = datetime.now().strftime("%H:%M")
                 if "15:30" <= now_hm <= "23:59":
-                    time.sleep(600)  # 15:30 ~ 23:59 구간은 10분씩 백그라운드 대기
+                    time.sleep(600)
                 else: 
-                    # 자정(00:00)이 지나면 now_hm 값이 작아지므로 루프 탈출
                     break
             
             print("[Bot] 새 날이 밝았습니다. 봇을 재가동합니다.\n")

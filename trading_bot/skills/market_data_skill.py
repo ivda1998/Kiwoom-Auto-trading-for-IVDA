@@ -4,9 +4,10 @@ import logging
 from datetime import datetime, timedelta
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Optional, List, Callable
+from typing import Optional, List, Callable, Dict
 
 import config
+from .base_skill import BaseSkill
 
 logger = logging.getLogger(__name__)
 
@@ -143,15 +144,27 @@ class CandleBuilder:
         raise ValueError(f"알 수 없는 시간 포맷: {time_str}")
 
 
-class DataManager:
+class MarketDataSkill(BaseSkill):
     """
     후보 종목 전체 캔들 빌더 관리 + 초기 분봉 데이터 로딩
     """
 
     def __init__(self, kiwoom):
-        self.kiwoom = kiwoom
+        super().__init__(kiwoom)
         self._builders: Dict[str, CandleBuilder] = {}
         self._initial_candles: Dict[str, List[Candle]] = {}
+
+    def execute(self, action_type: str, *args, **kwargs):
+        """
+        BaseSkill 구현부
+        """
+        if action_type == "init_stock":
+            return self.init_stock(*args, **kwargs)
+        elif action_type == "get_candles":
+            return self.get_candles(*args, **kwargs)
+        elif action_type == "get_builder":
+            return self.get_builder(*args, **kwargs)
+        return False
 
     def init_stock(self, code: str,
                    on_candle_close: Callable = None) -> CandleBuilder:

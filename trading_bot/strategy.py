@@ -6,7 +6,7 @@ from enum import Enum
 from typing import List, Optional, Dict
 from datetime import datetime
 
-from data_handler import Candle
+from skills.market_data_skill import Candle
 import config
 
 logger = logging.getLogger(__name__)
