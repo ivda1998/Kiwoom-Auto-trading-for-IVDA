@@ -3,6 +3,24 @@
 import os as _os
 _BASE_DIR = _os.path.dirname(_os.path.abspath(__file__))
 
+# .env 파일이 존재하는 경우 자동으로 os.environ에 로드
+_env_path = _os.path.join(_BASE_DIR, ".env")
+if _os.path.exists(_env_path):
+    try:
+        with open(_env_path, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if not _line or _line.startswith("#"):
+                    continue
+                if "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    _k = _k.strip()
+                    _v = _v.strip().strip("'").strip('"')
+                    if _k:
+                        _os.environ[_k] = _v
+    except Exception:
+        pass
+
 # ─────────────────────────────────────────
 # 키움 REST API 인증
 # ─────────────────────────────────────────
