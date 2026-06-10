@@ -14,36 +14,45 @@ import config
 # ─────────────────────────────────────────
 def setup_logger(name: str = "trading_bot") -> logging.Logger:
     """
-    파일 + 콘솔 동시 출력 로거 설정
+    파일 + 콘솔 동시 출력 로거 설정.
+    루트 로거에 핸들러를 추가하여 kiwoom_api 등 모든 모듈 로그가
+    같은 파일에 기록되도록 한다.
     """
     os.makedirs(config.LOG_DIR, exist_ok=True)
 
-    logger = logging.getLogger(name)
-    logger.setLevel(getattr(logging, config.LOG_LEVEL, logging.INFO))
-
-    if logger.handlers:
-        return logger  # 중복 핸들러 방지
-
+    level = getattr(logging, config.LOG_LEVEL, logging.INFO)
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    # 콘솔 핸들러
-    ch = logging.StreamHandler()
-    ch.setFormatter(fmt)
-    logger.addHandler(ch)
+    # ── 루트 로거에 핸들러 등록 (모든 모듈 로그 캡처) ──
+    root = logging.getLogger()
+    root.setLevel(level)
 
-    # 날짜별 파일 핸들러 (자정에 롤오버)
-    log_file = os.path.join(
-        config.LOG_DIR,
-        f"trading_{datetime.now().strftime('%Y%m%d')}.log"
-    )
-    fh = logging.handlers.TimedRotatingFileHandler(
-        log_file, when="midnight", backupCount=30, encoding="utf-8"
-    )
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
+    if not root.handlers:
+        # 콘솔 핸들러
+        ch = logging.StreamHandler()
+        ch.setFormatter(fmt)
+        root.addHandler(ch)
+
+        # 날짜별 파일 핸들러 (자정에 롤오버)
+        log_file = os.path.join(
+            config.LOG_DIR,
+            f"trading_{datetime.now().strftime('%Y%m%d')}.log"
+        )
+        fh = logging.handlers.TimedRotatingFileHandler(
+            log_file, when="midnight", backupCount=30, encoding="utf-8"
+        )
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+
+    # ── named logger 반환 (핸들러 없이 루트로 propagate) ──
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    # 이전에 직접 핸들러가 붙어 있으면 제거 (중복 출력 방지)
+    for h in list(logger.handlers):
+        logger.removeHandler(h)
 
     return logger
 

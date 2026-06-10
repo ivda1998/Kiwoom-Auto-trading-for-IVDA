@@ -43,6 +43,7 @@ class ExecutionSkill(BaseSkill):
     def __init__(self, kiwoom, risk_manager):
         super().__init__(kiwoom)
         self.risk = risk_manager
+        self.kiwoom = kiwoom
         self._positions: Dict[str, Position] = {}
         self._today_traded: set = set()   # 오늘 매매한 종목 코드
         self._screen_counter = 1000       # 화면번호 자동 증가

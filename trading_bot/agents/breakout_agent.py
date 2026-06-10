@@ -41,13 +41,27 @@ class BreakoutTradingAgent(BaseAgent):
         code = tick["code"]
         price = tick["price"]
 
-        # 틱 상태 업데이트 (harness 컨텍스트 보관용)
-        last_prices = harness.get_context().setdefault("last_prices", {})
+        # 틱 상태 업데이트 (컨텍스트는 TradingBot.__init__에서 미리 초기화됨)
+        ctx = harness.get_context()
+        last_prices = ctx.get("last_prices", {})
         last_prices[code] = price
 
-        today_amount = harness.get_context().setdefault("today_amount", {})
         volume = tick.get("volume", 0)
+        today_amount = ctx.get("today_amount", {})
         today_amount[code] = today_amount.get(code, 0) + price * volume
+
+        today_volume = ctx.get("today_volume", {})
+        today_volume[code] = today_volume.get(code, 0) + volume
+
+        # ★ VM picks 조기 라우팅 (strategy/execution 완전 우회)
+        # 조건 1: 오늘 vm_picks에 있는 종목 (매수 대기 + SL/TP)
+        # 조건 2: 오늘 vm_picks에 없더라도 VM 포지션 보유 중인 종목 (오버나잇 SL/TP 감시)
+        vm_manager  = harness.get_context().get("vm_manager")
+        custom_conf = config.get_custom_targets().get(code)
+        has_vm_pos  = bool(vm_manager and vm_manager.get_by_code(code))
+        if vm_manager and (custom_conf or has_vm_pos):
+            self._handle_vm_tick(code, price, harness, vm_manager, custom_conf or {})
+            return  # 일반 전략 로직 건너뜀
 
         # 포지션 보유 중인 종목: 실시간 청산 체크
         if execution.has_position(code):
@@ -232,6 +246,13 @@ class BreakoutTradingAgent(BaseAgent):
                     price=price,
                     reason=buy_reason
                 )
+                notifier = harness.get_context().get("notifier")
+                if notifier:
+                    notifier.send(
+                        f"🟢 <b>매수 체결</b> [{name}({code})]\n"
+                        f"{pos.qty}주 @ {price:,}원\n"
+                        f"손절가: {pos.stoploss_price:,}원 | 사유: {buy_reason}"
+                    )
                 if is_custom:
                     custom_conf = custom_targets.get(name) or custom_targets.get(code)
                     sl = custom_conf.get("stop_loss", -1)
@@ -281,7 +302,15 @@ class BreakoutTradingAgent(BaseAgent):
                 pnl=pnl, pnl_rate=pnl_rate, reason=reason
             )
             self.strategy.reset_stock(code)
-            
+            notifier = harness.get_context().get("notifier")
+            if notifier:
+                sell_emoji = "🔴" if signal == SignalType.SELL_STOP else "🟢"
+                notifier.send(
+                    f"{sell_emoji} <b>매도 체결</b> [{pos.name}({code})]\n"
+                    f"{pos.qty}주 @ {current_price:,}원\n"
+                    f"손익: {pnl:+,.0f}원 ({pnl_rate:+.2%}) | 사유: {reason}"
+                )
+
             if signal == SignalType.SELL_STOP:
                 emoji = "🔴"
             elif signal in (SignalType.SELL_PROFIT, SignalType.SELL_TARGET):
@@ -314,11 +343,137 @@ class BreakoutTradingAgent(BaseAgent):
         if print_status_board:
             print_status_board()
 
+    def _handle_vm_tick(self, code: str, price: float, harness, vm_manager, custom_conf: dict):
+        """VM picks 전용 틱 처리: 실시간 SL/TP 청산 + 범위 진입."""
+        notifier = harness.get_context().get("notifier")
+
+        # 1. 열린 포지션 SL/TP 체크
+        for pos in list(vm_manager.get_by_code(code)):
+            sl_price = pos.stop_loss  or 0
+            tp_price = pos.take_profit or 0
+            if sl_price > 0 and price <= sl_price:
+                ok = vm_manager.sell_vm(pos.position_id, price, "손절")
+                if ok:
+                    pnl = pos.pnl(price)
+                    if notifier:
+                        notifier.send(
+                            f"🔴 <b>VM 손절</b> [{pos.name}({code})]\n"
+                            f"{pos.qty}주 @ {price:,}원 | 손익: {pnl:+,.0f}원"
+                        )
+                    self.trade_logger.log_trade(
+                        code=code, name=pos.name, side="SELL",
+                        qty=pos.qty, price=price,
+                        pnl=pnl, pnl_rate=pos.pnl_rate(price), reason="손절"
+                    )
+                continue
+
+            if tp_price > 0 and price >= tp_price:
+                ok = vm_manager.sell_vm(pos.position_id, price, "목표가청산")
+                if ok:
+                    pnl = pos.pnl(price)
+                    if notifier:
+                        notifier.send(
+                            f"🟢 <b>VM 목표가 청산</b> [{pos.name}({code})]\n"
+                            f"{pos.qty}주 @ {price:,}원 | 손익: {pnl:+,.0f}원"
+                        )
+                    self.trade_logger.log_trade(
+                        code=code, name=pos.name, side="SELL",
+                        qty=pos.qty, price=price,
+                        pnl=pnl, pnl_rate=pos.pnl_rate(price), reason="목표가청산"
+                    )
+
+        # 2. 신규 매수 체크 (분할 매수: 1/3 지점 50% → 2/3 지점 50%)
+        if not self._can_buy_time():
+            return
+
+        buy_min    = custom_conf.get("buy_min") or 0
+        buy_max    = custom_conf.get("buy_max") or 0
+        created_at = custom_conf.get("created_at", "")
+
+        # buy_min/max 둘 다 0이면 진입 불가 (config에서 미지정 시 1/9999999로 설정됨)
+        if buy_min == 0 and buy_max == 0:
+            return
+        # 매수 범위 밖이면 리턴
+        if price < buy_min or price > buy_max:
+            return
+
+        sl   = custom_conf.get("stop_loss") or 0
+        tp   = custom_conf.get("take_profit") or 0
+        name = custom_conf.get("name", code)
+
+        # 매수 범위를 3등분한 임계값
+        buy_range  = buy_max - buy_min
+        threshold1 = buy_min + buy_range / 3        # 1/3 지점 → 1차(50%) 매수
+        threshold2 = buy_min + buy_range * 2 / 3    # 2/3 지점 → 2차(50%) 매수
+        half_amount = max(1, getattr(config, "VM_TRADE_AMOUNT", 1_000_000) // 2)
+
+        vm_buy_queue = harness.get_context().get("vm_buy_queue", [])
+
+        def _queued_tranches():
+            return sum(
+                1 for q in harness.get_context().get("vm_buy_queue", [])
+                if q["code"] == code and q["created_at"] == created_at
+            )
+
+        def _do_buy(tranche: int):
+            """tranche 번째 매수 시도 — 실패 시 대기열에 추가."""
+            ok = vm_manager.buy_vm(code, name, price, sl, tp, created_at,
+                                   amount=half_amount)
+            if ok:
+                pos_list = vm_manager.get_by_code(code)
+                new_pos  = pos_list[-1] if pos_list else None
+                qty      = new_pos.qty if new_pos else max(1, int(half_amount / price))
+                self.trade_logger.log_trade(
+                    code=code, name=name, side="BUY",
+                    qty=qty, price=price, reason=f"VM분할매수{tranche}차"
+                )
+                if notifier:
+                    notifier.send(
+                        f"🟢 <b>VM 분할매수 {tranche}차</b> [{name}({code})]\n"
+                        f"{qty}주 @ {price:,}원 "
+                        f"({'1/3' if tranche == 1 else '2/3'} 지점)\n"
+                        f"손절가: {sl:,}원 | 목표가: {tp:,}원"
+                    )
+                logger.info(
+                    f"[Agent] VM {tranche}차 매수 완료: {name}({code}) "
+                    f"{qty}주 @ {price:,}원"
+                )
+                return True
+            else:
+                queue = harness.get_context().setdefault("vm_buy_queue", [])
+                queue.append({
+                    "code": code, "name": name,
+                    "stop_loss": sl, "take_profit": tp,
+                    "created_at": created_at,
+                    "amount": half_amount,
+                    "tranche": tranche,
+                })
+                logger.info(
+                    f"[Agent] VM {tranche}차 대기열 추가: {name}({code}) — 예수금 부족"
+                )
+                return False
+
+        # ── 1차 매수: price >= threshold1, 보유 트랜치 0개 ──────────────────
+        tranche_count = vm_manager.count_positions_for_date(code, created_at)
+        total = tranche_count + _queued_tranches()
+
+        if total == 0 and price >= threshold1:
+            bought = _do_buy(1)
+            if not bought:
+                return  # 예수금 부족 → 2차도 불가
+            return  # 1차 성공 후 즉시 리턴 — 2차는 다음 틱에서 평가
+
+        # ── 2차 매수: price >= threshold2, 보유 트랜치 1개 ──────────────────
+        tranche_count = vm_manager.count_positions_for_date(code, created_at)
+        total = tranche_count + _queued_tranches()
+
+        if total == 1 and price >= threshold2:
+            _do_buy(2)
+
     def _in_trade_hours(self) -> bool:
-        now_hm = datetime.now().strftime("%H:%M")
-        return config.TRADE_START_TIME <= now_hm <= config.TRADE_END_TIME
+        """config.is_trade_hours() 래퍼 — 단일 진실 공급원 유지."""
+        return config.is_trade_hours()
 
     def _can_buy_time(self) -> bool:
-        now_hm = datetime.now().strftime("%H:%M")
-        buy_end = getattr(config, "BUY_END_TIME", "15:10")
-        return config.TRADE_START_TIME <= now_hm <= buy_end
+        """config.is_buy_time() 래퍼 — 단일 진실 공급원 유지."""
+        return config.is_buy_time()

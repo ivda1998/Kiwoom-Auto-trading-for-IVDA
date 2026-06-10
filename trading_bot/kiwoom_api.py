@@ -18,6 +18,7 @@
 
 import asyncio
 import json
+import os
 import threading
 import time
 import logging
@@ -51,6 +52,9 @@ class KiwoomAPI:
     _DAILY_LIMIT = 1700
     _WARN_THRESHOLDS = {1500, 1600, 1650, 1680}
 
+    # 토큰 캐시 파일 경로 (재시작 시 재사용)
+    _TOKEN_CACHE = os.path.join(os.path.dirname(__file__), "data", ".kiwoom_token_cache.json")
+
     def __init__(self):
         # ── REST ──────────────────────────────────────
         self._token: Optional[str] = None
@@ -59,6 +63,8 @@ class KiwoomAPI:
         self._session.headers.update({
             "Content-Type": "application/json;charset=UTF-8",
         })
+        # 재시작 시 캐시된 토큰 복원 시도
+        self._load_token_cache()
 
         # ── API 요청 횟수 추적 (일일 1700회 한도) ──────
         self._rest_call_count: int = 0
@@ -92,6 +98,12 @@ class KiwoomAPI:
     # 토큰 관리 (REST)
     # ─────────────────────────────────────────
     def login(self) -> bool:
+        # 캐시된 토큰이 아직 유효하면 au10001 발급 없이 재사용
+        if self._token and datetime.now() < self._token_expires:
+            logger.info("[KiwoomAPI] 기존 토큰 유효 — 재발급 생략 (만료: %s)",
+                        self._token_expires.strftime("%H:%M:%S"))
+            self._start_ws_thread()
+            return True
         ok = self._refresh_token()
         if ok:
             self._start_ws_thread()
@@ -127,6 +139,7 @@ class KiwoomAPI:
                 "authorization": f"Bearer {self._token}",
             })
             logger.info("[KiwoomAPI] 토큰 발급 성공")
+            self._save_token_cache()   # 파일에 저장 → 재시작 시 재사용
             return True
 
         except Exception as e:
@@ -137,11 +150,50 @@ class KiwoomAPI:
         if datetime.now() >= self._token_expires:
             self._refresh_token()
 
+    def _save_token_cache(self):
+        """토큰과 만료 시각을 파일에 저장."""
+        try:
+            import json as _j
+            os.makedirs(os.path.dirname(self._TOKEN_CACHE), exist_ok=True)
+            with open(self._TOKEN_CACHE, "w") as f:
+                _j.dump({
+                    "token":   self._token,
+                    "expires": self._token_expires.strftime("%Y%m%d%H%M%S"),
+                    "app_key": config.APP_KEY,   # 키 바뀌면 캐시 무효화
+                }, f)
+        except Exception as e:
+            logger.debug(f"[KiwoomAPI] 토큰 캐시 저장 실패: {e}")
+
+    def _load_token_cache(self):
+        """재시작 시 파일에서 토큰 복원. 만료됐거나 키가 다르면 무시."""
+        try:
+            import json as _j
+            if not os.path.exists(self._TOKEN_CACHE):
+                return
+            with open(self._TOKEN_CACHE) as f:
+                data = _j.load(f)
+            # 앱 키 불일치 → 캐시 무효
+            if data.get("app_key") != config.APP_KEY:
+                return
+            expires = datetime.strptime(data["expires"], "%Y%m%d%H%M%S")
+            if datetime.now() >= expires:
+                return   # 이미 만료
+            self._token = data["token"]
+            self._token_expires = expires
+            self._session.headers.update({
+                "authorization": f"Bearer {self._token}",
+            })
+            logger.info("[KiwoomAPI] 토큰 캐시 복원 (만료: %s)",
+                        expires.strftime("%H:%M:%S"))
+        except Exception as e:
+            logger.debug(f"[KiwoomAPI] 토큰 캐시 로드 실패: {e}")
+
     # ─────────────────────────────────────────
     # 공통 POST (키움 REST는 모두 POST)
     # ─────────────────────────────────────────
     def _post(self, path: str, body: dict, api_id: str,
-              cont_yn: str = "N", next_key: str = "") -> dict:
+              cont_yn: str = "N", next_key: str = "",
+              max_retries: int = 3) -> dict:
         self._ensure_token()
 
         # ── 일일 요청 횟수 추적 ──────────────────────
@@ -175,11 +227,9 @@ class KiwoomAPI:
             "next-key": next_key,
         }
 
-        # 429 Too Many Requests 시 최대 3회 재시도
-        # ※ 스로틀은 루프 내부(HTTP 호출 직전)에서 적용
-        #   → 429 후 sleep(wait) + retry 에도 _last_rest_call이 retry 시각으로 갱신됨
-        #   → 다음 _post() 호출에서 올바른 간격 계산 가능 (cascading 429 방지)
-        for attempt in range(3):
+        # 429 Too Many Requests 시 최대 max_retries회 재시도
+        # max_retries=0 이면 429 즉시 예외 발생 (폴링 호출용 — 블로킹 방지)
+        for attempt in range(max(1, max_retries)):
             # ── 최소 호출 간격 스로틀 (매 시도 직전 적용) ──
             _now_ts  = time.time()
             _elapsed = _now_ts - self._last_rest_call
@@ -190,10 +240,12 @@ class KiwoomAPI:
             resp = self._session.post(url, json=body, headers=headers, timeout=15)
 
             if resp.status_code == 429:
-                wait = [5, 20, 60][attempt]   # 5초, 20초, 60초
+                if max_retries == 0:
+                    raise RuntimeError(f"429 {api_id} — 즉시 스킵")
+                wait = [5, 20, 60][min(attempt, 2)]
                 logger.warning(
                     f"[KiwoomAPI] 429 요청 한도 초과 ({api_id}) "
-                    f"→ {wait}초 대기 후 재시도 ({attempt+1}/3)"
+                    f"→ {wait}초 대기 후 재시도 ({attempt+1}/{max_retries})"
                 )
                 time.sleep(wait)
                 continue
@@ -243,7 +295,8 @@ class KiwoomAPI:
             async with websockets.connect(
                 self.WS_URI,
                 additional_headers={"authorization": f"Bearer {self._token}"},
-                ping_interval=None,  # Kiwoom uses application-level JSON ping/pong
+                ping_interval=20,   # 20초마다 WS 프레임 PING 전송 (유휴 연결 유지)
+                ping_timeout=10,    # PONG 미수신 시 10초 후 재연결
             ) as ws:
                 self._ws_conn = ws # ── WS 로그인 인증 (필수: 다른 TR 전에 반드시 먼저 전송) ──
                 await ws.send(json.dumps({"trnm": "LOGIN", "token": self._token}))
@@ -288,16 +341,16 @@ class KiwoomAPI:
             self._ws_ready.clear()
             logger.info("[KiwoomWS] WebSocket 연결 종료")
             # 비의도적 연결 종료 시 자동 재연결
-            # unsubscribe_realtime()이 _subscribed_codes.clear()를 호출하므로
-            # 장 종료 / 정상 종료 시에는 재연결하지 않음
-            if self._subscribed_codes:
-                self._ensure_token()  # 토큰 만료 여부 확인 및 갱신 (만료가 원인인 경우 대응)
-                logger.warning("[KiwoomWS] 비의도적 연결 종료 감지 → 3초 후 재연결 시도...")
-                await asyncio.sleep(3)
-                # _ws_connecting = True 유지: 새 _ws_connect()가 시작 직후 다시 True로 설정
-                asyncio.ensure_future(self._ws_connect())
+            # unsubscribe_realtime()이 _subscribed_codes.clear() + _ws_stop_requested = True를
+            # 설정하므로, 장 종료 / 정상 종료 시에는 재연결하지 않음
+            if getattr(self, "_ws_stop_requested", False):
+                self._ws_connecting = False  # 정상 종료 — 재연결 불필요
             else:
-                self._ws_connecting = False  # 정상 종료 (장 종료 등) 시만 False로 해제
+                # 비의도적 종료 (서버 타임아웃, 네트워크 오류 등) → 무조건 재연결
+                self._ensure_token()
+                logger.warning("[KiwoomWS] 비의도적 연결 종료 → 3초 후 재연결 시도...")
+                await asyncio.sleep(3)
+                asyncio.ensure_future(self._ws_connect())
 
     def _ensure_ws(self, timeout: float = 15.0):
         """WS 연결이 없으면 연결을 시작하고 ready 이벤트를 기다림."""
@@ -421,13 +474,16 @@ class KiwoomAPI:
     # ─────────────────────────────────────────
     # 현재가 + 시가총액 - REST
     # ─────────────────────────────────────────
-    def get_stock_info(self, code: str) -> dict:
-        """ka10001 - 주식 현재가 시세"""
+    def get_stock_info(self, code: str, fast: bool = False) -> dict:
+        """ka10001 - 주식 현재가 시세 (현재가·등락률·거래량 포함)
+        fast=True: 429 시 재시도 없이 즉시 예외 발생 (폴링용)
+        """
         try:
             data = self._post(
                 "/api/dostk/stkinfo",
                 body={"stk_cd": code},
                 api_id="ka10001",
+                max_retries=0 if fast else 3,
             )
             out     = data
             name    = out.get("stk_nm", "")
@@ -435,15 +491,61 @@ class KiwoomAPI:
                            .replace(",", "").lstrip("+-") or "0"))
             mktcap  = int(str(out.get("mac", "0"))
                           .replace(",", "") or "0") * 100_000_000
+            # 등락률 (±X.XX% 형태 or 숫자 문자열)
+            flu_rt_raw = str(out.get("flu_rt", "0")).replace(",", "").replace("%", "").strip()
+            try:
+                flu_rt = float(flu_rt_raw)
+            except ValueError:
+                flu_rt = 0.0
+            # 누적 거래량
+            vol_raw = str(out.get("acc_trd_vol", "0")).replace(",", "").strip()
+            try:
+                acc_trd_vol = int(vol_raw)
+            except ValueError:
+                acc_trd_vol = 0
             return {
                 "code":          code,
                 "name":          name,
                 "current_price": current,
                 "market_cap":    mktcap,
+                "flu_rt":        flu_rt,        # 등락률 (float, %)
+                "acc_trd_vol":   acc_trd_vol,   # 누적거래량 (int, 주)
             }
         except Exception as e:
             logger.debug(f"[KiwoomAPI] {code} 현재가 실패: {e}")
-            return {"code": code, "name": "", "current_price": 0, "market_cap": 0}
+            return {"code": code, "name": "", "current_price": 0, "market_cap": 0,
+                    "flu_rt": 0.0, "acc_trd_vol": 0}
+
+    def get_investor_data(self, code: str) -> dict:
+        """
+        ka10060 - 주식 투자자별 순매수 현황 (당일 개인/기관/외국인).
+        반환: {"individual": int, "institution": int, "foreign": int}  (단위: 주)
+        실패 시 모두 None 반환.
+        """
+        try:
+            data = self._post(
+                "/api/dostk/stkinfo",
+                body={"stk_cd": code},
+                api_id="ka10060",
+            )
+            def _qty(key):
+                raw = str(data.get(key, "0")).replace(",", "").lstrip("+-").strip()
+                try:
+                    return int(raw)
+                except ValueError:
+                    return 0
+            # 개인: ind_*, 기관: orgn_*, 외국인: frgn_*
+            # 필드명이 API마다 다를 수 있어 복수 후보 시도
+            indv = (_qty("ind_buy_qty")  or _qty("ind_netbuy")
+                    or _qty("indvdl_netbuy_qty") or 0)
+            orgn = (_qty("orgn_buy_qty") or _qty("orgn_netbuy")
+                    or _qty("instttn_netbuy_qty") or 0)
+            frgn = (_qty("frgn_buy_qty") or _qty("frgn_netbuy")
+                    or _qty("frgn_netbuy_qty") or 0)
+            return {"individual": indv, "institution": orgn, "foreign": frgn}
+        except Exception as e:
+            logger.debug(f"[KiwoomAPI] {code} 수급 조회 실패: {e}")
+            return {"individual": None, "institution": None, "foreign": None}
 
     # ─────────────────────────────────────────
     # 일봉 데이터 - REST
@@ -872,6 +974,7 @@ class KiwoomAPI:
                     "dmst_stex_tp": "KRX",
                 },
                 api_id=api_id,
+                max_retries=1,  # 주문 429 시 1회만 재시도 (5초 대기) — 블로킹 방지
             )
             rt = data.get("return_code", -1)
             if rt == 0:
@@ -931,6 +1034,7 @@ class KiwoomAPI:
 
     def unsubscribe_realtime(self, screen_no: str = ""):
         """장 종료 시 구독 해제 + WS 연결 종료."""
+        self._ws_stop_requested = True   # 재연결 방지 플래그
         self._subscribed_codes.clear()
         if self._ws_conn is not None:
             try:

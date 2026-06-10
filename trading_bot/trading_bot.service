@@ -1,0 +1,25 @@
+# VM 배포 후 설치 명령:
+#   sudo cp trading_bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable trading_bot
+#   sudo systemctl start trading_bot
+#   journalctl -u trading_bot -f
+
+[Unit]
+Description=Auto Trading Bot (Ddo Investment)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/autoTrade/trading_bot
+ExecStart=/home/ubuntu/venv/bin/python main.py --auto
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+Environment=VM_MODE=true
+
+[Install]
+WantedBy=multi-user.target

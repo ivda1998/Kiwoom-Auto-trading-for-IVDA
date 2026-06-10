@@ -150,7 +150,8 @@ class MarketDataSkill(BaseSkill):
     """
 
     def __init__(self, kiwoom):
-        super().__init__(kiwoom)
+        super().__init__(kiwoom)   # BaseSkill: self.api = kiwoom
+        self.kiwoom = self.api     # 하위 호환 alias
         self._builders: Dict[str, CandleBuilder] = {}
         self._initial_candles: Dict[str, List[Candle]] = {}
 

@@ -575,11 +575,11 @@ class StockScanner:
             custom_targets = _cfg.get_custom_targets()
             custom_conf = custom_targets.get(c['name']) or custom_targets.get(c['code'])
             if custom_conf:
-                buy_min = custom_conf.get("buy_min", 0)
-                buy_max = custom_conf.get("buy_max", 0)
-                sl = custom_conf.get("stop_loss", -1)
-                tp = custom_conf.get("take_profit", -1)
-                
+                buy_min = custom_conf.get("buy_min") or 0
+                buy_max = custom_conf.get("buy_max") or 0
+                sl = custom_conf.get("stop_loss") or -1
+                tp = custom_conf.get("take_profit") or -1
+
                 buy_str = f"{buy_min:,} ~ {buy_max:,}원 구간 매수" if buy_max > 0 else "지정 범위 없음"
                 sl_str = f"{sl:,}원" if sl > 0 else "미지정"
                 tp_str = f"{tp:,}원" if tp > 0 else "미지정"
