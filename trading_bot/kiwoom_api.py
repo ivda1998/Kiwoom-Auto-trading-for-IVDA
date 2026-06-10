@@ -74,9 +74,9 @@ class KiwoomAPI:
         self._last_rest_call: float = 0.0
         self._rest_min_interval: float = 0.22   # 최소 0.22초 간격
 
-        # ── 차트 API 전용 스로틀 (ka10081/ka10080 전용, ≥1초/call) ──
+        # ── 차트 API 전용 스로틀 (ka10081/ka10080 전용, ≥2초/call) ──
         self._last_chart_call: float = 0.0
-        self._chart_min_interval: float = 1.1   # 최소 1.1초 간격 (429 방지용)
+        self._chart_min_interval: float = 2.0   # 최소 2.0초 간격 (429 방지용)
 
         # ── WebSocket ──────────────────────────────────
         self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -568,6 +568,7 @@ class KiwoomAPI:
                     "upd_stkpc_tp": "1",
                 },
                 api_id="ka10081",
+                max_retries=0,   # 429 즉시 스킵 — 스캔 블로킹 방지
             )
             items = data.get("stk_dt_pole_chart_qry", [])
             if not items:
