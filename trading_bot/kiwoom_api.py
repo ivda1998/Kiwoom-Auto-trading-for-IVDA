@@ -677,14 +677,20 @@ class KiwoomAPI:
 
         self._cnsrlst_future = future_holder[0]
 
-        # 요청 전송
+        # 요청 전송 (_ws_conn을 로컬로 캡처 — _ensure_ws 이후 연결 단절 레이스 방지)
+        ws = self._ws_conn
+        if ws is None:
+            logger.error("[KiwoomAPI] CNSRLST 전송 실패: WS 미연결")
+            self._cnsrlst_future = None
+            return []
         req = json.dumps({"trnm": "CNSRLST"})
         try:
             asyncio.run_coroutine_threadsafe(
-                self._ws_conn.send(req), self._ws_loop
+                ws.send(req), self._ws_loop
             ).result(timeout=5)
         except Exception as e:
             logger.error(f"[KiwoomAPI] CNSRLST 전송 실패: {e}")
+            self._cnsrlst_future = None
             return []
 
         # 응답 대기 (최대 12초)
@@ -755,6 +761,12 @@ class KiwoomAPI:
 
         self._cnsrreq_future = future_holder[0]
 
+        # _ws_conn을 로컬로 캡처 — _ensure_ws 이후 연결 단절 레이스 방지
+        ws = self._ws_conn
+        if ws is None:
+            logger.error(f"[KiwoomAPI] CNSRREQ 전송 실패: WS 미연결 (seq={seq})")
+            self._cnsrreq_future = None
+            return []
         req = json.dumps({
             "trnm":        "CNSRREQ",
             "seq":         seq,
@@ -763,7 +775,7 @@ class KiwoomAPI:
         })
         try:
             asyncio.run_coroutine_threadsafe(
-                self._ws_conn.send(req), self._ws_loop
+                ws.send(req), self._ws_loop
             ).result(timeout=5)
         except Exception as e:
             logger.error(f"[KiwoomAPI] CNSRREQ 전송 실패: {e}")
@@ -833,6 +845,11 @@ class KiwoomAPI:
         except TimeoutError as e:
             logger.error(f"[KiwoomAPI] 조건식 실시간 등록 중 WS 타임아웃: {e}")
             return
+        # _ws_conn을 로컬로 캡처 — _ensure_ws 이후 연결 단절 레이스 방지
+        ws = self._ws_conn
+        if ws is None:
+            logger.error(f"[KiwoomAPI] 조건식 실시간 등록 실패: WS 미연결 (seq={seq})")
+            return
         req = json.dumps({
             "trnm":        "CNSRREQ",
             "seq":         seq,
@@ -841,7 +858,7 @@ class KiwoomAPI:
         })
         try:
             asyncio.run_coroutine_threadsafe(
-                self._ws_conn.send(req), self._ws_loop
+                ws.send(req), self._ws_loop
             ).result(timeout=5)
             logger.info(f"[KiwoomAPI] 조건식 실시간 등록 완료 (seq={seq})")
         except Exception as e:
