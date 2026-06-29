@@ -629,9 +629,8 @@ class KiwoomAPI:
             if not items:
                 return None
 
-            # 진단: 최신 봉(items[0])의 원본 필드 확인 (count 작을 때만 INFO)
-            if count <= 10:
-                logger.info(f"[KiwoomAPI] {code} ka10080 최신봉raw(count={count}): {items[0]}")
+            # 진단: 최신 봉(items[0])의 원본 필드 항상 출력 (volume 필드명 확인용)
+            logger.info(f"[KiwoomAPI] {code} ka10080 최신봉raw(count={count}): {items[0]}")
 
             rows = []
             for item in items[:count]:

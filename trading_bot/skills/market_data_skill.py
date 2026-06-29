@@ -188,13 +188,30 @@ class MarketDataSkill(BaseSkill):
             df = self.kiwoom.get_minute_data(
                 code, tick_range=config.CANDLE_INTERVAL, count=60
             )
+            now_dt = datetime.now()
+            skipped_future = 0
             for _, row in df.iterrows():
+                dt_str = str(row["datetime"]).strip()
+                try:
+                    if len(dt_str) >= 14:
+                        c_dt = datetime.strptime(dt_str[:14], "%Y%m%d%H%M%S")
+                    elif len(dt_str) >= 6:
+                        # cntr_tm이 HHMMSS 형식일 때 오늘 날짜 결합
+                        h, m, s = int(dt_str[:2]), int(dt_str[2:4]), int(dt_str[4:6])
+                        c_dt = now_dt.replace(hour=h, minute=m, second=s, microsecond=0)
+                    else:
+                        logger.warning(f"[DataManager] {code} dt 형식 불명: '{dt_str}'")
+                        continue
+                except Exception as ex:
+                    logger.warning(f"[DataManager] {code} dt 파싱 실패: '{dt_str}' → {ex}")
+                    continue
+                # 아직 확정되지 않은 봉 제외 (미래 시각)
+                if c_dt > now_dt:
+                    skipped_future += 1
+                    continue
                 c = Candle(
                     code=code,
-                    datetime=datetime.strptime(
-                        str(row["datetime"]).strip(), "%Y%m%d%H%M%S"
-                    ) if len(str(row["datetime"])) >= 14
-                    else datetime.now(),
+                    datetime=c_dt,
                     open=abs(int(row["open"])),
                     high=abs(int(row["high"])),
                     low=abs(int(row["low"])),
@@ -204,7 +221,7 @@ class MarketDataSkill(BaseSkill):
                 )
                 builder._candles.append(c)
             n = len(builder._candles)
-            logger.info(f"[DataManager] {code} 초기 봉 {n}개 로딩")
+            logger.info(f"[DataManager] {code} 초기 봉 {n}개 로딩 (미래봉 제외={skipped_future})")
             if builder._candles:
                 last = builder._candles[-1]
                 logger.info(
@@ -262,18 +279,28 @@ class MarketDataSkill(BaseSkill):
         injected = 0
         skipped_old = 0
         skipped_bad_dt = 0
+        skipped_future = 0
+        now_dt = datetime.now()
         for _, row in df.iterrows():
             try:
                 dt_str = str(row["datetime"]).strip()
-                dt = (datetime.strptime(dt_str[:14], "%Y%m%d%H%M%S")
-                      if len(dt_str) >= 14 else None)
-                if dt is None:
+                if len(dt_str) >= 14:
+                    dt = datetime.strptime(dt_str[:14], "%Y%m%d%H%M%S")
+                elif len(dt_str) >= 6:
+                    # cntr_tm이 HHMMSS 형식일 때 오늘 날짜 결합
+                    h, m, s = int(dt_str[:2]), int(dt_str[2:4]), int(dt_str[4:6])
+                    dt = now_dt.replace(hour=h, minute=m, second=s, microsecond=0)
+                else:
                     skipped_bad_dt += 1
-                    logger.warning(f"[MarketData] {code} dt 파싱 불가: '{dt_str}' (len={len(dt_str)})")
+                    logger.warning(f"[MarketData] {code} dt 형식 불명: '{dt_str}'")
                     continue
             except Exception as ex:
                 skipped_bad_dt += 1
-                logger.warning(f"[MarketData] {code} dt 파싱 예외: {ex}")
+                logger.warning(f"[MarketData] {code} dt 파싱 예외: '{row.get('datetime', '')}' → {ex}")
+                continue
+            # 아직 확정되지 않은 봉 제외 (미래 시각)
+            if dt > now_dt:
+                skipped_future += 1
                 continue
             if dt <= last_dt:
                 skipped_old += 1
@@ -301,8 +328,9 @@ class MarketDataSkill(BaseSkill):
         newest = df.iloc[-1] if not df.empty else None
         logger.info(
             f"[MarketData] {code} refresh: last_dt={last_dt}, "
-            f"API행={len(df)}, 신규={injected}, 과거스킵={skipped_old}, dt불량={skipped_bad_dt}"
-            + (f", API최신={newest['datetime']} O={newest['open']} C={newest['close']} V={newest['volume']}"
+            f"API행={len(df)}, 신규={injected}, 과거스킵={skipped_old}, "
+            f"dt불량={skipped_bad_dt}, 미래봉={skipped_future}"
+            + (f", API최신raw={newest['datetime']} O={newest['open']} C={newest['close']} V={newest['volume']}"
                if newest is not None else "")
         )
 

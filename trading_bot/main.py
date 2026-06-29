@@ -1710,7 +1710,8 @@ class TradingBot:
                     ma_ok_short = last.close < ma
                     ma_sym = "▲" if ma_ok_long else ("▼" if ma_ok_short else "=")
                     lines.append(
-                        f"5MA: {ma:,.0f}원 | 종가: {last.close:,}원 → {ma_sym} "
+                        f"5MA: {ma:,.0f}원 | 최신봉[{last.datetime.strftime('%H:%M')}] "
+                        f"종가: {last.close:,}원 → {ma_sym} "
                         f"{'MA 위' if ma_ok_long else 'MA 아래' if ma_ok_short else 'MA 동일'}"
                     )
 
@@ -1727,12 +1728,15 @@ class TradingBot:
                     if len(closed) >= ag.SIGNAL_CONSEC:
                         recent = closed[-ag.SIGNAL_CONSEC:]
                         consec_strs = [
-                            f"{'▲양봉' if c.is_bullish else '▼음봉'}({c.close:,})"
+                            f"{'▲양봉' if c.is_bullish else '▼음봉'}[{c.datetime.strftime('%H:%M')}] "
+                            f"O={c.open:,} C={c.close:,} V={c.volume:,}"
                             for c in recent
                         ]
                         all_bull = all(c.is_bullish for c in recent)
                         all_bear = all(c.close < c.open for c in recent)
-                        lines.append(f"최근 2봉: {' / '.join(consec_strs)}")
+                        lines.append("최근 2봉:")
+                        for s in consec_strs:
+                            lines.append(f"  {s}")
 
                         # LONG 조건 체크
                         long_conds = [
