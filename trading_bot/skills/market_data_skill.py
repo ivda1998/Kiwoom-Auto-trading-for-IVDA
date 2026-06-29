@@ -30,7 +30,7 @@ class Candle:
 
     @property
     def is_bullish(self) -> bool:
-        return self.close >= self.open
+        return self.close > self.open  # strict: doji(open==close)는 양봉 아님
 
     @property
     def range(self) -> int:
@@ -105,6 +105,13 @@ class CandleBuilder:
             self._current.volume += volume
 
         return closed_candle
+
+    def add_closed_candle(self, candle: 'Candle'):
+        """확정봉 직접 주입 (API 방식 갱신용). 콜백을 발동한다."""
+        candle.is_closed = True
+        self._candles.append(candle)
+        for cb in self._on_close_callbacks:
+            cb(candle)
 
     def get_candles(self, n: int = None) -> List[Candle]:
         """확정된 봉 리스트 반환 (최신 n개)"""
@@ -196,7 +203,14 @@ class MarketDataSkill(BaseSkill):
                     is_closed=True
                 )
                 builder._candles.append(c)
-            logger.info(f"[DataManager] {code} 초기 봉 {len(builder._candles)}개 로딩")
+            n = len(builder._candles)
+            logger.info(f"[DataManager] {code} 초기 봉 {n}개 로딩")
+            if builder._candles:
+                last = builder._candles[-1]
+                logger.info(
+                    f"[DataManager] {code} 최신 초기봉: "
+                    f"{last.datetime} O={last.open} H={last.high} L={last.low} C={last.close} V={last.volume}"
+                )
         except Exception as e:
             logger.warning(f"[DataManager] {code} 초기 데이터 로딩 실패: {e}")
 
@@ -222,6 +236,77 @@ class MarketDataSkill(BaseSkill):
     def get_candles(self, code: str, n: int = None) -> List[Candle]:
         builder = self._builders.get(code)
         return builder.get_candles(n) if builder else []
+
+    def refresh_candles(self, code: str, count: int = 5) -> int:
+        """
+        ka10080으로 최근 분봉을 조회해 새 확정봉만 builder에 주입.
+        Returns: 주입된 신규 봉 수(≥0), API 실패 시 -1
+        """
+        builder = self._builders.get(code)
+        if not builder:
+            return -1
+
+        last_dt = builder._candles[-1].datetime if builder._candles else datetime.min
+
+        try:
+            df = self.kiwoom.get_minute_data(
+                code, tick_range=config.CANDLE_INTERVAL, count=count
+            )
+            if df is None or df.empty:
+                logger.warning(f"[MarketData] {code} 분봉 갱신: API 응답 없음 (builder candles={len(builder._candles)})")
+                return -1
+        except Exception as e:
+            logger.warning(f"[MarketData] {code} 분봉 갱신 실패: {e}")
+            return -1
+
+        injected = 0
+        skipped_old = 0
+        skipped_bad_dt = 0
+        for _, row in df.iterrows():
+            try:
+                dt_str = str(row["datetime"]).strip()
+                dt = (datetime.strptime(dt_str[:14], "%Y%m%d%H%M%S")
+                      if len(dt_str) >= 14 else None)
+                if dt is None:
+                    skipped_bad_dt += 1
+                    logger.warning(f"[MarketData] {code} dt 파싱 불가: '{dt_str}' (len={len(dt_str)})")
+                    continue
+            except Exception as ex:
+                skipped_bad_dt += 1
+                logger.warning(f"[MarketData] {code} dt 파싱 예외: {ex}")
+                continue
+            if dt <= last_dt:
+                skipped_old += 1
+                continue
+
+            candle = Candle(
+                code=code,
+                datetime=dt,
+                open=abs(int(row["open"])),
+                high=abs(int(row["high"])),
+                low=abs(int(row["low"])),
+                close=abs(int(row["close"])),
+                volume=int(row["volume"]),
+                is_closed=True,
+            )
+            builder.add_closed_candle(candle)
+            injected += 1
+            logger.info(
+                f"[MarketData] {code} 신규봉 주입: "
+                f"{dt} O={candle.open} H={candle.high} "
+                f"L={candle.low} C={candle.close} V={candle.volume}"
+            )
+
+        # 항상 갱신 결과 로그 (진단용)
+        newest = df.iloc[-1] if not df.empty else None
+        logger.info(
+            f"[MarketData] {code} refresh: last_dt={last_dt}, "
+            f"API행={len(df)}, 신규={injected}, 과거스킵={skipped_old}, dt불량={skipped_bad_dt}"
+            + (f", API최신={newest['datetime']} O={newest['open']} C={newest['close']} V={newest['volume']}"
+               if newest is not None else "")
+        )
+
+        return injected
 
     def remove_stock(self, code: str):
         self._builders.pop(code, None)

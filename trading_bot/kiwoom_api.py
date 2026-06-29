@@ -197,28 +197,33 @@ class KiwoomAPI:
         self._ensure_token()
 
         # ── 일일 요청 횟수 추적 ──────────────────────
+        # 주문 API(kt10000/kt10001/kt10004)는 한도 체크 제외 — 포지션 청산/취소가 차단되어선 안 됨
+        _is_order_api = api_id in ("kt10000", "kt10001", "kt10004")
+
         today = datetime.now().date()
         if self._rest_call_date != today:
             self._rest_call_date  = today
             self._rest_call_count = 0
 
-        self._rest_call_count += 1
+        if not _is_order_api:
+            self._rest_call_count += 1
         cnt = self._rest_call_count
 
-        if cnt in self._WARN_THRESHOLDS:
-            logger.warning(
-                f"[KiwoomAPI] ⚠️  오늘 REST 요청 {cnt}/{self._DAILY_LIMIT}회 "
-                f"— 한도 초과 시 당일 모든 API 중단"
-            )
-        elif cnt >= self._DAILY_LIMIT:
-            logger.error(
-                f"[KiwoomAPI] 🚫 일일 REST 요청 한도({self._DAILY_LIMIT}회) 초과! "
-                f"({api_id}) → 오늘 더 이상 API 호출 불가"
-            )
-            raise RuntimeError(
-                f"[KiwoomAPI] 일일 요청 한도({self._DAILY_LIMIT}회) 초과 — "
-                f"봇을 내일 재시작하세요."
-            )
+        if not _is_order_api:
+            if cnt in self._WARN_THRESHOLDS:
+                logger.warning(
+                    f"[KiwoomAPI] ⚠️  오늘 REST 요청 {cnt}/{self._DAILY_LIMIT}회 "
+                    f"— 한도 초과 시 당일 모든 API 중단"
+                )
+            elif cnt >= self._DAILY_LIMIT:
+                logger.error(
+                    f"[KiwoomAPI] 🚫 일일 REST 요청 한도({self._DAILY_LIMIT}회) 초과! "
+                    f"({api_id}) → 오늘 더 이상 API 중단"
+                )
+                raise RuntimeError(
+                    f"[KiwoomAPI] 일일 요청 한도({self._DAILY_LIMIT}회) 초과 — "
+                    f"봇을 내일 재시작하세요."
+                )
 
         url = self.BASE_URL + path
         headers = {
@@ -259,8 +264,8 @@ class KiwoomAPI:
 
             return resp.json()
 
-        # 3회 모두 실패
-        logger.error(f"[KiwoomAPI] {api_id} 3회 재시도 후 최종 실패")
+        # max_retries회 모두 실패
+        logger.error(f"[KiwoomAPI] {api_id} {max(1, max_retries)}회 재시도 후 최종 실패")
         resp.raise_for_status()
         return {}
 
@@ -624,6 +629,10 @@ class KiwoomAPI:
             if not items:
                 return None
 
+            # 진단: 최신 봉(items[0])의 원본 필드 확인 (count 작을 때만 INFO)
+            if count <= 10:
+                logger.info(f"[KiwoomAPI] {code} ka10080 최신봉raw(count={count}): {items[0]}")
+
             rows = []
             for item in items[:count]:
                 def _int(v):
@@ -971,38 +980,72 @@ class KiwoomAPI:
     # ─────────────────────────────────────────
     def send_order(self, order_name: str, screen_no: str,
                    code: str, qty: int, price: int,
-                   order_type: int, hoga_type: str = "03") -> int:
+                   order_type: int, hoga_type: str = "03") -> tuple:
         """
         REST 모의/실전 통합 주문API (kt10000 / kt10001)
         매수: api-id = kt10000
         매도: api-id = kt10001
         hoga_type: "00"=지정가, "03"=시장가
+        반환: (0, ord_no) 성공, (-1, "") 실패
         """
         api_id  = "kt10000" if order_type == 1 else "kt10001"
 
         try:
+            _body = {
+                "acnt_no":      config.ACCOUNT_NUMBER,
+                "stk_cd":       code,
+                "ord_qty":      str(qty),
+                "ord_prc":      "0" if hoga_type == "03" else str(price),
+                "trde_tp":      hoga_type,
+                "dmst_stex_tp": "KRX",
+            }
+            if config.ACCOUNT_PASSWORD:
+                _body["acnt_pswd"] = config.ACCOUNT_PASSWORD
             data = self._post(
                 "/api/dostk/ordr",
-                body={
-                    "acnt_no":  config.ACCOUNT_NUMBER,
-                    "stk_cd":   code,
-                    "ord_qty":  str(qty),
-                    "ord_prc":  "0" if hoga_type == "03" else str(price),
-                    "trde_tp":  hoga_type,
-                    "dmst_stex_tp": "KRX",
-                },
+                body=_body,
                 api_id=api_id,
-                max_retries=1,  # 주문 429 시 1회만 재시도 (5초 대기) — 블로킹 방지
+                max_retries=2,  # 주문 429 시 최대 1회 재시도 (5→20초) — 매도 청산 실패 방지
             )
             rt = data.get("return_code", -1)
             if rt == 0:
-                logger.info(f"[KiwoomAPI] 주문 성공: {order_name} {code} {qty}주")
-                return 0
+                ord_no = str(data.get("ord_no", data.get("ordr_no", "")))
+                logger.info(f"[KiwoomAPI] 주문 성공: {order_name} {code} {qty}주 ord_no={ord_no}")
+                return (0, ord_no)
             else:
-                logger.error(f"[KiwoomAPI] 주문 실패: {data.get('return_msg')}")
-                return -1
+                logger.error(
+                    f"[KiwoomAPI] 주문 실패: [{rt}]{data.get('return_msg')} "
+                    f"| 요청body={{'stk_cd':{code},'ord_qty':{qty},'ord_prc':{price},'trde_tp':{hoga_type}}} "
+                    f"| 전체응답={data}"
+                )
+                return (-1, "")
         except Exception as e:
             logger.error(f"[KiwoomAPI] 주문 오류: {e}")
+            return (-1, "")
+
+    def cancel_order(self, org_ord_no: str, code: str, qty: int) -> int:
+        """지정가 주문 취소 (kt10004). return 0=성공, -1=실패.
+        ※ SIM_ prefix 가상주문은 호출하지 말 것 (breakout_agent에서 필터링)."""
+        try:
+            data = self._post(
+                "/api/dostk/ordrcnc",
+                body={
+                    "acnt_no":    config.ACCOUNT_NUMBER,
+                    "stk_cd":     code,
+                    "ord_qty":    str(qty),
+                    "org_ord_no": org_ord_no,
+                },
+                api_id="kt10004",
+                max_retries=1,
+            )
+            rt = data.get("return_code", -1)
+            if rt == 0:
+                logger.info(f"[KiwoomAPI] 주문 취소 성공: {code} org_ord_no={org_ord_no}")
+                return 0
+            logger.error(f"[KiwoomAPI] 주문 취소 실패: {data.get('return_msg')}")
+            return -1
+        except Exception as e:
+            logger.error(f"[KiwoomAPI] 주문 취소 오류: {e}")
             return -1
 
     # ─────────────────────────────────────────

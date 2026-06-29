@@ -26,7 +26,8 @@ if _os.path.exists(_env_path):
 # ─────────────────────────────────────────
 APP_KEY    = _os.environ.get("KIWOOM_APP_KEY",    "YOUR_APP_KEY")
 APP_SECRET = _os.environ.get("KIWOOM_APP_SECRET", "YOUR_APP_SECRET")
-ACCOUNT_NUMBER = _os.environ.get("KIWOOM_ACCOUNT", "81202949")
+ACCOUNT_NUMBER   = _os.environ.get("KIWOOM_ACCOUNT", "81202949")
+ACCOUNT_PASSWORD = _os.environ.get("KIWOOM_ACCOUNT_PASSWORD", "")
 IS_SIMULATION = _os.environ.get("IS_SIMULATION", "true").lower() == "true"
 EXCLUDE_SPAC_ETN_ETF = _os.environ.get("EXCLUDE_SPAC_ETN_ETF", "false").lower() == "true"
 
@@ -87,12 +88,19 @@ import json
 import logging
 from datetime import datetime
 
-TELEGRAM_PICKS_FILE = os.path.join(os.path.dirname(__file__), "data", "telegram_picks.json")
 VM_PICKS_PATH = _os.environ.get(
     "VM_PICKS_PATH",
     os.path.join(os.path.dirname(__file__), "data", "vm_picks.json")
 )
 VM_MODE = _os.environ.get("VM_MODE", "false").lower() == "true"
+
+# ─────────────────────────────────────────
+# 전략 활성화 토글 (런타임에서 텔레그램 /strategy 명령으로 변경 가능)
+# ─────────────────────────────────────────
+VM_PICKS_ENABLED      = _os.environ.get("VM_PICKS_ENABLED",  "true").lower() == "true"
+BREAKOUT_ENABLED      = _os.environ.get("BREAKOUT_ENABLED",  "true").lower() == "true"
+LEVERAGE_ENABLED      = _os.environ.get("LEVERAGE_ENABLED",  "true").lower() == "true"
+BREAKOUT_TRADE_AMOUNT = int(_os.environ.get("BREAKOUT_TRADE_AMOUNT", "0"))  # 0 = POSITION_RATIO 비율 사용
 
 # 텔레그램 알림 봇 설정 (.env에서 로드)
 TELEGRAM_BOT_TOKEN = _os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -100,9 +108,9 @@ TELEGRAM_CHAT_ID   = _os.environ.get("TELEGRAM_CHAT_ID", "")
 
 def get_custom_targets(filter_today: bool = False) -> dict:
     """
-    CUSTOM_TARGETS, telegram_picks.json, vm_picks.json 을 병합하여 실시간 반환
-    우선순위: CUSTOM_TARGETS > telegram_picks.json > vm_picks.json
-    filter_today=True: 외부 picks 중 created_at이 오늘 날짜인 것만 포함
+    CUSTOM_TARGETS, vm_picks.json 을 병합하여 실시간 반환
+    우선순위: CUSTOM_TARGETS > vm_picks.json
+    filter_today=True: picks 중 created_at이 오늘 날짜인 것만 포함
 
     지원하는 vm_picks.json 형식:
       포맷 A (플랫): {"000660": {"name":..., "buy_min":..., "take_profit":..., ...}}
@@ -117,6 +125,22 @@ def get_custom_targets(filter_today: bool = False) -> dict:
         "단기": 3, "중기": 10, "장기": 20,
         "단기~중기": 5, "중기~장기": 15, "단기~장기": 10,
     }
+
+    import re as _re
+
+    def _parse_price(v) -> int:
+        """숫자 또는 '16500 (설명)' 형식의 값을 정수로 변환. 실패 시 0 반환."""
+        if v is None:
+            return 0
+        if isinstance(v, (int, float)):
+            return int(v)
+        m = _re.match(r'[\d,]+', str(v).strip())
+        if m:
+            try:
+                return int(m.group().replace(',', ''))
+            except ValueError:
+                pass
+        return 0
 
     def _merge_picks_file(path: str):
         try:
@@ -140,11 +164,11 @@ def get_custom_targets(filter_today: bool = False) -> dict:
                     holding_days = _HOLDING_MAP.get(holding_period)
                     if holding_days is None:
                         holding_days = _HOLDING_MAP.get(holding_period.split("~")[0], 3)
-                    ref_price = pick.get("current_price") or 0
-                    raw_min   = pick.get("buy_min") or 0
-                    raw_max   = pick.get("buy_max") or 0
-                    sl_price  = pick.get("stop_loss") or 0
-                    tp_price  = pick.get("take_profit_1") or 0
+                    ref_price = _parse_price(pick.get("current_price"))
+                    raw_min   = _parse_price(pick.get("buy_min"))
+                    raw_max   = _parse_price(pick.get("buy_max"))
+                    sl_price  = _parse_price(pick.get("stop_loss"))
+                    tp_price  = _parse_price(pick.get("take_profit_1"))
                     # buy_min/max 미지정 = 전일종가(current_price) 기준 -1.5% ~ 전일종가
                     no_range = not (raw_min > 0 and raw_max > 0)
                     if no_range and ref_price > 0:
@@ -157,7 +181,7 @@ def get_custom_targets(filter_today: bool = False) -> dict:
                         "no_range":      no_range,           # 표시용: 범위 미지정 여부
                         "stop_loss":     sl_price,
                         "take_profit":   tp_price,
-                        "take_profit_2": pick.get("take_profit_2") or 0,
+                        "take_profit_2": _parse_price(pick.get("take_profit_2")),
                         "ref_price":     ref_price,
                         "created_at":    created_at,
                         "holding_days":  holding_days,
@@ -179,7 +203,6 @@ def get_custom_targets(filter_today: bool = False) -> dict:
         except Exception as e:
             logging.getLogger(__name__).debug(f"picks 파일 읽기 실패 ({path}): {e}")
 
-    _merge_picks_file(TELEGRAM_PICKS_FILE)
     _merge_picks_file(VM_PICKS_PATH)
     return targets
 
@@ -264,6 +287,19 @@ MAX_MARKET_CAP = 2_000_000_000_000
 # ─────────────────────────────────────────
 MARKET_FILTER_CODE = "Q"
 MARKET_FILTER_MA   = 5
+
+# ─────────────────────────────────────────
+# 레버리지-인버스 전략 파라미터
+# ─────────────────────────────────────────
+LEVERAGE_ETF_CODE     = "0193W0"   # KODEX 삼성전자단일종목레버리지
+INVERSE_ETF_CODE      = "0193L0"   # PLUS 삼성전자단일종목인버스2x
+LEVERAGE_SAMSUNG_CODE = "005930"   # 신호원 종목
+LEVERAGE_AMOUNT       = int(_os.environ.get("LEVERAGE_AMOUNT", "500000"))  # 회당 투자금
+LEVERAGE_SL_RATE      = 0.015      # ETF 손절 -1.5%
+LEVERAGE_TP_RATE      = 0.030      # ETF 익절 +3.0%
+LEVERAGE_ENTRY_START  = "09:00"
+LEVERAGE_ENTRY_END    = "15:00"
+LEVERAGE_FORCE_EXIT   = "15:20"
 
 # ─────────────────────────────────────────
 # 로그 / DB

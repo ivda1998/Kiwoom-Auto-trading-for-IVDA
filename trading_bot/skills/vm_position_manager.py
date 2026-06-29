@@ -2,9 +2,9 @@
 # VM picks 전용 다중 포지션 관리 + JSON 영속성 + 고정금액 매수
 # BaseSkill 상속 → harness.register_skill("vm", ...) 으로 등록
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields as dc_fields
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 import json
 import logging
 import os
@@ -27,6 +27,7 @@ class VMPosition:
     entered_at: str       # ISO datetime 문자열
     order_no: str = ""
     created_at: str = ""  # json의 created_at (같은 날 중복 매수 방지용)
+    tp_ord_no: str = ""   # TP 지정가 매도 주문 번호 (SL 발동 시 취소용)
 
     def pnl(self, current_price: float) -> float:
         return (current_price - self.entry_price) * self.qty
@@ -39,11 +40,34 @@ class VMPosition:
         )
 
 
+@dataclass
+class VMPendingOrder:
+    ord_no:      str
+    code:        str
+    name:        str
+    tranche:     int    # 1차 or 2차
+    price:       int    # 지정가 (threshold2=1차, threshold1=2차)
+    qty:         int
+    stop_loss:   float
+    take_profit: float
+    created_at:  str
+    placed_at:   str    # ISO timestamp
+    tp_ord_no:   str = ""
+    filled:      bool = False
+    fill_price:  int = 0
+
+
+def _load_dataclass(cls, item: dict):
+    """dataclass 필드 중 JSON에 있는 것만 골라 안전하게 생성 (여분 필드 무시)."""
+    known = {f.name for f in dc_fields(cls)}
+    return cls(**{k: v for k, v in item.items() if k in known})
+
+
 class VMPositionManager(BaseSkill):
     """
     VM picks 전용 포지션 매니저. BaseSkill 상속으로 하네스에 등록 가능.
     - 코드당 다중 포지션 허용 (position_id로 구분)
-    - 고정 금액(VM_TRADE_AMOUNT, 기본 100만원) 시장가 매수
+    - 고정 금액(VM_TRADE_AMOUNT, 기본 100만원) 시장가 매수 or 지정가 매수
     - json에 명시된 절대 stop_loss / take_profit 사용
     - 재시작 후 vm_positions.json에서 오버나잇 포지션 복구
     - created_at 기반 중복 매수 방지 (같은 날 추천 = 1회만 매수)
@@ -61,7 +85,11 @@ class VMPositionManager(BaseSkill):
         self.kiwoom = self.api            # 하위 호환 alias
         self.risk = risk_manager
         self._positions: Dict[str, VMPosition] = {}  # position_id → VMPosition
+        self._pending: Dict[str, VMPendingOrder] = {}  # ord_no → VMPendingOrder
         self._persist_path = persist_path
+        self._pending_path = os.path.join(
+            os.path.dirname(persist_path), "vm_pending_orders.json"
+        )
         self._screen_counter = 2000
 
     # ── BaseSkill 인터페이스 ────────────────────────────────────────────────────
@@ -84,22 +112,24 @@ class VMPositionManager(BaseSkill):
             return self.save()
         raise ValueError(f"[VMSkill] 알 수 없는 액션: {action_type}")
 
-    # ── 영속성 ──────────────────────────────────────────────────────────────────
+    # ── 영속성 (포지션) ─────────────────────────────────────────────────────────
 
     def load(self):
         """봇 재시작 시 vm_positions.json에서 포지션 복구"""
         if not os.path.exists(self._persist_path):
             logger.info("[VMManager] vm_positions.json 없음 — 신규 시작")
-            return
-        try:
-            with open(self._persist_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            for item in data:
-                pos = VMPosition(**item)
-                self._positions[pos.position_id] = pos
-            logger.info(f"[VMManager] {len(self._positions)}개 포지션 복구")
-        except Exception as e:
-            logger.error(f"[VMManager] 포지션 로드 실패: {e}")
+        else:
+            try:
+                with open(self._persist_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                for item in data:
+                    pos = _load_dataclass(VMPosition, item)
+                    self._positions[pos.position_id] = pos
+                logger.info(f"[VMManager] {len(self._positions)}개 포지션 복구")
+            except Exception as e:
+                logger.error(f"[VMManager] 포지션 로드 실패: {e}")
+
+        self.load_pending()
 
     def save(self):
         """포지션 변경마다 즉시 JSON으로 저장"""
@@ -111,7 +141,219 @@ class VMPositionManager(BaseSkill):
         except Exception as e:
             logger.error(f"[VMManager] 포지션 저장 실패: {e}")
 
-    # ── 매수 ────────────────────────────────────────────────────────────────────
+    # ── 영속성 (pending 지정가 주문) ────────────────────────────────────────────
+
+    def load_pending(self):
+        """봇 재시작 시 vm_pending_orders.json에서 미체결 주문 복구."""
+        if not os.path.exists(self._pending_path):
+            return
+        try:
+            with open(self._pending_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for item in data:
+                p = _load_dataclass(VMPendingOrder, item)
+                if not p.filled:
+                    self._pending[p.ord_no] = p
+            logger.info(f"[VMManager] {len(self._pending)}개 미체결 pending 주문 복구")
+        except Exception as e:
+            logger.error(f"[VMManager] pending 로드 실패: {e}")
+
+    def save_pending(self):
+        """pending 변경마다 즉시 JSON으로 저장."""
+        try:
+            os.makedirs(os.path.dirname(self._pending_path), exist_ok=True)
+            data = [vars(p) for p in self._pending.values()]
+            with open(self._pending_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"[VMManager] pending 저장 실패: {e}")
+
+    # ── 지정가 매수 주문 발주 ───────────────────────────────────────────────────
+
+    def place_limit_buy(
+        self,
+        code: str,
+        name: str,
+        tranche: int,
+        price: int,
+        qty: int,
+        stop_loss: float,
+        take_profit: float,
+        created_at: str,
+    ) -> str:
+        """지정가 매수 등록. 실전: API 발주. 모의투자: 가상 pending(틱 도달 시 시장가 체결)."""
+        import time as _time
+        if config.IS_SIMULATION:
+            # 키움 모의투자 API는 대기 지정가 주문 미지원(RC4027) → 가상 pending 등록
+            ord_no = f"SIM_{code}_{tranche}_{int(_time.time())}"
+            logger.info(
+                f"[VMManager] [Mock] 가상 지정가 등록: {name}({code}) {tranche}차 "
+                f"{qty}주 @ {price:,}원 (틱 도달 시 시장가 체결)"
+            )
+        else:
+            ret, ord_no = self.kiwoom.send_order(
+                order_name=f"VM지정매수{tranche}_{code}",
+                screen_no=str(self._next_screen()),
+                code=code,
+                qty=qty,
+                price=price,
+                order_type=1,
+                hoga_type="00",
+            )
+            if ret != 0 or not ord_no:
+                logger.error(f"[VMManager] 지정가 매수 발주 실패: {name}({code}) {tranche}차")
+                return ""
+            logger.info(
+                f"[VMManager] 지정가 매수 발주: {name}({code}) {tranche}차 "
+                f"{qty}주 @ {price:,}원 ord_no={ord_no}"
+            )
+        self._pending[ord_no] = VMPendingOrder(
+            ord_no=ord_no,
+            code=code,
+            name=name,
+            tranche=tranche,
+            price=price,
+            qty=qty,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            created_at=created_at,
+            placed_at=datetime.now().isoformat(),
+        )
+        self.save_pending()
+        return ord_no
+
+    def place_limit_sell(self, code: str, qty: int, tp_price: int) -> str:
+        """TP 매도 발주. 실전: 지정가 API. 모의투자: 가상 ord_no(틱 도달 시 시장가 체결)."""
+        import time as _time
+        if config.IS_SIMULATION:
+            return f"SIM_TP_{code}_{int(_time.time())}"
+        ret, ord_no = self.kiwoom.send_order(
+            order_name=f"VM지정매도_{code}",
+            screen_no=str(self._next_screen()),
+            code=code,
+            qty=qty,
+            price=tp_price,
+            order_type=2,
+            hoga_type="00",
+        )
+        if ret == 0 and ord_no:
+            logger.info(
+                f"[VMManager] 지정가 매도 발주: {code} {qty}주 @ {tp_price:,}원 "
+                f"ord_no={ord_no}"
+            )
+            return ord_no
+        logger.error(f"[VMManager] 지정가 매도 발주 실패: {code}")
+        return ""
+
+    def on_fill_detected(self, ord_no: str, fill_price: int) -> bool:
+        """틱 기반 fill 추론 시 호출 — 포지션 생성 + TP 발주.
+        모의투자: 가상 pending이므로 실제 시장가 매수 주문도 함께 발주."""
+        pending = self._pending.get(ord_no)
+        if not pending or pending.filled:
+            return False
+
+        # 모의투자: 가상 pending이므로 실제 매수를 시장가로 발주
+        if config.IS_SIMULATION:
+            ret, _ = self.kiwoom.send_order(
+                order_name=f"VM분할매수{pending.tranche}_{pending.code}",
+                screen_no=str(self._next_screen()),
+                code=pending.code,
+                qty=pending.qty,
+                price=0,
+                order_type=1,
+                hoga_type="03",
+            )
+            if ret != 0:
+                logger.error(
+                    f"[VMManager] [Mock] 시장가 매수 실패: {pending.name}({pending.code}) "
+                    f"{pending.tranche}차"
+                )
+                return False
+
+        pending.filled = True
+        pending.fill_price = fill_price
+
+        position_id = (
+            f"{pending.code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            f"_t{pending.tranche}"
+        )
+        pos = VMPosition(
+            position_id=position_id,
+            code=pending.code,
+            name=pending.name,
+            qty=pending.qty,
+            entry_price=fill_price,
+            stop_loss=pending.stop_loss,
+            take_profit=pending.take_profit,
+            entered_at=datetime.now().isoformat(),
+            order_no=pending.ord_no,
+            created_at=pending.created_at,
+        )
+        self._positions[position_id] = pos
+        self.risk.on_buy(pending.qty * fill_price)
+
+        tp_price = int(pending.take_profit)
+        tp_ord_no = self.place_limit_sell(pending.code, pending.qty, tp_price)
+        pending.tp_ord_no = tp_ord_no
+        pos.tp_ord_no = tp_ord_no
+
+        self.save()
+        self.save_pending()
+        logger.info(
+            f"[VMManager] fill 확인: {pending.name}({pending.code}) {pending.tranche}차 "
+            f"{pending.qty}주 @ {fill_price:,}원 tp_ord={tp_ord_no}"
+        )
+        return True
+
+    def infer_tp_filled(self, position_id: str, fill_price: float):
+        """TP 지정가 매도 체결 추론 — 주문 재발행 없이 포지션 제거."""
+        pos = self._positions.pop(position_id, None)
+        if not pos:
+            return None
+        pnl = pos.pnl(fill_price)
+        self.risk.on_sell(pnl)
+        self.save()
+        logger.info(
+            f"[VMManager] TP 체결 추론: {pos.name}({pos.code}) "
+            f"{pos.qty}주 @ {fill_price:,}원 손익:{pnl:+,.0f}"
+        )
+        return pos
+
+    def cancel_pending_buys(self, code: Optional[str] = None):
+        """미체결 지정가 매수 주문 취소 (EOD 또는 종목 지정)."""
+        for ord_no, p in list(self._pending.items()):
+            if p.filled:
+                continue
+            if code and p.code != code:
+                continue
+            if ord_no.startswith("SIM_"):
+                logger.info(f"[VMManager] [Mock] 가상 매수 취소: {p.name}({p.code}) {p.tranche}차")
+            else:
+                ret = self.kiwoom.cancel_order(ord_no, p.code, p.qty)
+                if ret == 0:
+                    logger.info(f"[VMManager] 미체결 매수 취소: {p.name}({p.code}) {p.tranche}차")
+            del self._pending[ord_no]
+        self.save_pending()
+
+    # ── pending 조회 ────────────────────────────────────────────────────────────
+
+    def get_pending_for_code(self, code: str) -> List[VMPendingOrder]:
+        """특정 종목의 미체결(미fill) pending 주문 목록."""
+        return [p for p in self._pending.values() if p.code == code and not p.filled]
+
+    def has_pending(self, code: str, created_at: str) -> bool:
+        """같은 created_at의 pending 주문이 있는지 확인 (중복 발주 방지)."""
+        return any(
+            p.code == code and p.created_at == created_at
+            for p in self._pending.values()
+        )
+
+    def get_tp_ord_no(self, position_id: str) -> str:
+        """SL 발동 시 취소할 TP 주문 번호 조회."""
+        pos = self._positions.get(position_id)
+        return pos.tp_ord_no if pos else ""
+
+    # ── 시장가 매수 ─────────────────────────────────────────────────────────────
 
     def buy_vm(
         self,
@@ -143,7 +385,7 @@ class VMPositionManager(BaseSkill):
             return False
 
         screen_no = str(self._next_screen())
-        ret = self.kiwoom.send_order(
+        ret, _ = self.kiwoom.send_order(
             order_name=f"VM매수_{code}",
             screen_no=screen_no,
             code=code,
@@ -189,7 +431,7 @@ class VMPositionManager(BaseSkill):
             return False
 
         screen_no = str(self._next_screen())
-        ret = self.kiwoom.send_order(
+        ret, _ = self.kiwoom.send_order(
             order_name=f"VM매도_{pos.code}",
             screen_no=screen_no,
             code=pos.code,

@@ -102,7 +102,8 @@ class RiskManager:
         if price <= 0:
             return 0
 
-        invest_amount = self._initial_capital * config.POSITION_RATIO
+        fixed = getattr(config, "BREAKOUT_TRADE_AMOUNT", 0)
+        invest_amount = fixed if fixed > 0 else self._initial_capital * config.POSITION_RATIO
         invest_amount = min(invest_amount, available * 0.95)  # 가용금액 95% 이내
 
         qty = int(invest_amount / price)

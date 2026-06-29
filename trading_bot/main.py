@@ -23,9 +23,31 @@ from hooks.risk_hook import RiskHook
 from hooks.market_filter_hook import MarketFilterHook
 from harness.kiwoom_harness import KiwoomHarness
 from agents.breakout_agent import BreakoutTradingAgent
+from agents.leverage_agent import LeverageInverseAgent
 
 # 로거 초기화
 logger = setup_logger("main")
+
+
+def _update_env_value(key: str, value: str) -> None:
+    """trading_bot/.env의 키 값을 업데이트하거나 없으면 줄 끝에 추가."""
+    import os as _os_env
+    env_path = _os_env.path.join(_os_env.path.dirname(__file__), ".env")
+    try:
+        lines = open(env_path, "r", encoding="utf-8").readlines() if _os_env.path.exists(env_path) else []
+        found = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith(f"{key}=") or stripped.startswith(f"{key} ="):
+                lines[i] = f"{key}={value}\n"
+                found = True
+                break
+        if not found:
+            lines.append(f"{key}={value}\n")
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except Exception as e:
+        logger.warning(f"[Env] .env 저장 실패 ({key}): {e}")
 
 
 class TradingBot:
@@ -41,6 +63,7 @@ class TradingBot:
         self._stop_event = threading.Event()
         self._cleared_today = False
         self._last_sim_poll = {}
+        self._last_acc_vol  = {}   # 삼성전자 시뮬 폴링: 누적거래량 → 증분 변환용
         self._last_scan_time = 0.0
         self._vm_picks_mtime = 0.0
         self._last_vm_picks_check = 0.0
@@ -79,6 +102,9 @@ class TradingBot:
         # 5. 에이전트 등록
         self.agent = BreakoutTradingAgent()
         self.harness.register_agent(self.agent)
+
+        self.leverage_agent = LeverageInverseAgent()
+        self.harness.register_agent(self.leverage_agent)
 
         # 6. 하네스 런타임 공유 컨텍스트 설정
         # ── 오브젝트 참조 ──────────────────────────────────────────────────
@@ -193,6 +219,9 @@ class TradingBot:
             # 대화형 조건식 선택 (CONDITION_INTERACTIVE=True 일 때)
             self._choose_condition()
 
+        # 레버리지-인버스 전략: 삼성전자 + ETF 구독
+        self._init_leverage_strategy()
+
         # 후보 종목 초기 스캔 (일봉 기준)
         self._run_initial_scan()
 
@@ -204,6 +233,32 @@ class TradingBot:
 
         # 메인 루프 (1분 주기 타이머 역할)
         self._main_loop()
+
+    # ─────────────────────────────────────────
+    # 레버리지-인버스 전략 초기화
+    # ─────────────────────────────────────────
+    def _init_leverage_strategy(self):
+        samsung = config.LEVERAGE_SAMSUNG_CODE
+        lev     = config.LEVERAGE_ETF_CODE
+        inv     = config.INVERSE_ETF_CODE
+
+        # 삼성전자: 3분봉 캔들 빌더 + 실시간 구독
+        self.market_data_skill.init_stock(
+            samsung,
+            on_candle_close=lambda c, _s=samsung: self.harness.broadcast_event("CANDLE", c)
+        )
+        self.kiwoom.subscribe_realtime(samsung)
+
+        # ETF 2종목: 틱 구독만 (SL/TP 감시용)
+        for code in (lev, inv):
+            self.market_data_skill.init_stock(code)
+            self.kiwoom.subscribe_realtime(code)
+
+        self.leverage_agent.reset_daily()
+        logger.info(
+            f"[Bot] 레버리지 전략 초기화: 삼성({samsung}) "
+            f"레버리지({lev}) 인버스({inv})"
+        )
 
     # ─────────────────────────────────────────
     # 대화형 전략 및 조건식 선택
@@ -398,6 +453,11 @@ class TradingBot:
                 )
                 if not config.IS_SIMULATION:
                     self.kiwoom.subscribe_realtime(code)
+                # 지정가 분할매수 발주 (VM picks 전용)
+                if config.VM_MODE and getattr(config, "VM_PICKS_ENABLED", True):
+                    _vm_conf = config.get_custom_targets().get(code)
+                    if _vm_conf:
+                        self.agent._place_vm_limit_orders(code, _vm_conf, self.vm_manager, self.kiwoom, self.notifier)
                 logger.info(f"[Bot] 구독 시작: {c['name']}({code})")
 
         self._last_scan_time = time.time()
@@ -462,6 +522,9 @@ class TradingBot:
                 )
                 self.agent.strategy.reset_stock(code)
                 print(f"\n  ⏰ 일괄 청산 체결: [{pos.name}({code})] 사유: {reason}\n")
+
+        # 미체결 지정가 매수 주문 전량 취소
+        self.vm_manager.cancel_pending_buys()
 
         # VM 포지션 청산
         # "시간외청산"(자동 일괄)은 holding_days 남은 포지션 오버나잇 유지
@@ -701,7 +764,16 @@ class TradingBot:
                         )
                         if not config.IS_SIMULATION:
                             self.kiwoom.subscribe_realtime(code)
+                        # 지정가 분할매수 발주 (VM picks 전용)
+                        _vm_conf = config.get_custom_targets().get(code)
+                        if _vm_conf and config.VM_MODE and getattr(config, "VM_PICKS_ENABLED", True):
+                            self.agent._place_vm_limit_orders(code, _vm_conf, self.vm_manager, self.kiwoom, self.notifier)
                         logger.info(f"[Bot] vm_picks 신규 후보 등록: {c['name']}({code})")
+                # 기존 후보 중 VM picks 종목에도 지정가 발주 시도
+                # (초기 스캔 후 vm_picks.json이 갱신되어 재스캔될 때 누락 방지)
+                if config.VM_MODE and getattr(config, "VM_PICKS_ENABLED", True):
+                    for _code, _vm_conf in config.get_custom_targets().items():
+                        self.agent._place_vm_limit_orders(_code, _vm_conf, self.vm_manager, self.kiwoom, self.notifier)
             finally:
                 self._rescan_in_progress = False
 
@@ -750,10 +822,13 @@ class TradingBot:
                     self._on_market_close()
                     break
 
-                # VM 매수 대기열 처리 (60초 간격)
+                # VM 매수 대기열 + 미체결 fill 폴백 처리 (60초 간격)
                 if config.VM_MODE and now_ts - self._last_queue_check >= 60:
                     self._last_queue_check = now_ts
                     self._process_vm_buy_queue()
+                    # 모의투자: 시뮬 폴링 TICK → _handle_vm_tick이 pending fill 처리하므로 중복 API 호출 생략
+                    if not config.IS_SIMULATION:
+                        self._check_pending_fills()
 
                 # 모의투자 전용 REST 틱 폴링
                 if config.IS_SIMULATION and self._in_trade_hours() and self._candidates:
@@ -772,26 +847,67 @@ class TradingBot:
 
                     last_prices = self.harness.get_context().get("last_prices", {})
 
+                    # 레버리지 전략 종목 추가 (삼성전자 + ETF — 모의투자 무구독 대응)
+                    if hasattr(self, "leverage_agent"):
+                        ag = self.leverage_agent
+                        target_codes = list(dict.fromkeys(
+                            target_codes + [ag.SAMSUNG_CODE, ag.LEVERAGE_CODE, ag.INVERSE_CODE]
+                        ))
+
                     for code in target_codes:
-                        last_poll   = self._last_sim_poll.get(code, 0.0)
-                        # 3분 단일 간격 (API 할당량 절약)
-                        interval = 180
+                        if code == "005930":
+                            continue  # 삼성전자는 하단 ka10080 갱신 블록에서 처리
+
+                        last_poll = self._last_sim_poll.get(code, 0.0)
+                        interval  = 180
 
                         if now_ts - last_poll >= interval:
-                            self._last_sim_poll[code] = now_ts
                             try:
                                 info = self.kiwoom.get_stock_info(code, fast=True)
                             except Exception:
-                                continue   # 429 즉시 스킵 → 다음 3분에 재시도 (블로킹 방지)
+                                self._last_sim_poll[code] = now_ts - interval + 30
+                                continue
                             if info and info["current_price"] > 0:
+                                self._last_sim_poll[code] = now_ts
+
+                                # 거래량: acc_trd_vol(일 누계) → 증분 변환
+                                new_acc_vol  = info.get("acc_trd_vol", 0)
+                                prev_acc_vol = self._last_acc_vol.get(code, new_acc_vol)
+                                inc_vol      = max(0, new_acc_vol - prev_acc_vol)
+                                self._last_acc_vol[code] = new_acc_vol
+
                                 fake_tick = {
-                                    "code": code,
-                                    "price": info["current_price"],
-                                    "volume": info.get("acc_trd_vol", 0),
-                                    "time": datetime.now().strftime("%H%M%S"),
+                                    "code":   code,
+                                    "price":  info["current_price"],
+                                    "volume": inc_vol,
+                                    "time":   datetime.now().strftime("%H%M%S"),
                                 }
-                                self.harness.broadcast_event("TICK", fake_tick)
+                                self.harness._on_tick(fake_tick)
+                            else:
+                                self._last_sim_poll[code] = now_ts - interval + 30
                             time.sleep(1.5)
+
+                    # 삼성전자 갱신은 아래 독립 블록에서 처리
+
+                # ── 삼성전자 3분봉: ka10080 갱신 (시뮬, 레버리지 전략 독립 블록) ──
+                # _candidates 유무와 무관하게 항상 실행
+                if (config.IS_SIMULATION and self._in_trade_hours()
+                        and hasattr(self, "leverage_agent")):
+                    last_refresh = self._last_sim_poll.get("005930", 0.0)
+                    if now_ts - last_refresh >= 180:
+                        market_data = self.harness.skills.get("market_data")
+                        if market_data:
+                            n = market_data.refresh_candles("005930", count=5)
+                            if n >= 0:
+                                self._last_sim_poll["005930"] = now_ts
+                                logger.info(
+                                    f"[Sim] 삼성전자 3분봉 갱신: {n}개 주입 (ka10080)"
+                                )
+                            else:
+                                self._last_sim_poll["005930"] = now_ts - 180 + 30
+                                logger.warning(
+                                    "[Sim] 삼성전자 분봉 갱신 실패 → 30초 후 재시도"
+                                )
 
                 # 수동 강제청산 확인
                 import os
@@ -1096,6 +1212,27 @@ class TradingBot:
                 lines.append(f"\n  └ 일반 미실현 합계: {gen_unreal:+,.0f}원")
                 total_unreal += gen_unreal
 
+            # ── 삼성전자 롱숏 전략 포지션 ─────────────────────────────
+            lev_pos = getattr(self.leverage_agent, "_position", None)
+            if lev_pos:
+                etf_code  = lev_pos["code"]
+                cur_lev, flu_lev = _get_price(etf_code, lev_pos["entry_price"])
+                if not cur_lev:
+                    cur_lev = lev_pos["entry_price"]
+                pnl_lev  = (cur_lev - lev_pos["entry_price"]) * lev_pos["qty"]
+                rate_lev = (cur_lev - lev_pos["entry_price"]) / lev_pos["entry_price"] if lev_pos["entry_price"] else 0
+                total_unreal += pnl_lev
+                emoji = "▲" if pnl_lev >= 0 else "▼"
+                dir_label = "레버리지(롱)" if lev_pos["direction"] == "LEVERAGE" else "인버스(숏)"
+                flu_str = f" {flu_lev:+.2f}%" if flu_lev is not None else ""
+                lines.append(
+                    f"\n⚡ <b>삼성전자 롱숏 전략</b>\n"
+                    f"  {emoji} <b>{lev_pos['name']} ({etf_code})</b> [{dir_label}]\n"
+                    f"    진입: {lev_pos['entry_price']:,}원 | 현재: {cur_lev:,}원{flu_str}\n"
+                    f"    평가손익: {pnl_lev:+,.0f}원 ({rate_lev:+.2%})\n"
+                    f"    수량: {lev_pos['qty']}주 | SL: {lev_pos['stop_loss']:,}원 | TP: {lev_pos['take_profit']:,}원"
+                )
+
             lines.append(f"\n💰 <b>미실현 손익 총합: {total_unreal:+,.0f}원</b>")
             return "\n".join(lines)
 
@@ -1231,7 +1368,13 @@ class TradingBot:
                     )
 
                 if no_range:
-                    lines.append(f"   매수 범위: 미지정 → SL 초과 시 즉시 진입")
+                    _pend = self.vm_manager.get_pending_for_code(code)
+                    if _pend:
+                        _ps = sorted(_pend, key=lambda p: p.tranche)
+                        _pp = [f"{p.tranche}차={p.price:,}" for p in _ps]
+                        lines.append(f"   매수 범위: 실시간 재계산 ({' / '.join(_pp)}원)")
+                    else:
+                        lines.append(f"   매수 범위: 미지정 → SL 초과 시 즉시 진입")
                 elif buy_min and buy_max:
                     lines.append(f"   매수 범위: {buy_min:,} ~ {buy_max:,}원")
                 if sl:
@@ -1260,83 +1403,129 @@ class TradingBot:
         _STRATEGY_NAMES = {1: "신고가 돌파", 2: "전일 종가 돌파", 3: "20MA 눌림 매수"}
 
         def cmd_strategy(args):
-            """전략 설정 조회(/strategy) 또는 변경(/strategy 1~3 / vm on|off / amount N / condition 이름)"""
+            """3개 전략 토글/금액 조회·변경 (/strategy vm|breakout|lev on/off/amount N)"""
             parts = args.strip().split()
 
+            def _flag(b): return "✅ ON" if b else "❌ OFF"
+
             if not parts:
-                # 현재 설정 조회
-                vm_flag = "✅ ON" if config.VM_MODE else "❌ OFF"
+                # ── 현재 설정 조회 ─────────────────────────────────────────
+                vm_on   = config.VM_MODE and getattr(config, "VM_PICKS_ENABLED", True)
+                bo_on   = getattr(config, "BREAKOUT_ENABLED", True)
+                lev_on  = getattr(config, "LEVERAGE_ENABLED", True)
+
+                vm_amt  = getattr(config, "VM_TRADE_AMOUNT", 1_000_000)
+                bo_amt  = getattr(config, "BREAKOUT_TRADE_AMOUNT", 0)
+                lev_amt = getattr(config, "LEVERAGE_AMOUNT", 500_000)
+
                 stype   = getattr(config, "ENTRY_STRATEGY_TYPE", 3)
-                amt     = getattr(config, "VM_TRADE_AMOUNT", 1_000_000)
                 sl_rate = getattr(config, "STOP_LOSS_RATE", 0.03)
                 tp_rate = getattr(config, "TARGET_PROFIT_RATE", 0.07)
                 cond    = config.CONDITION_NAME or config.CONDITION_SEQ or "없음"
                 clear_t = getattr(config, "CLEAR_TIME", "15:20")
-                lines = ["⚙️ <b>전략 설정 현황</b>\n"]
 
-                if config.VM_MODE:
-                    # VM 모드 활성: picks 전용 설정만 표시
-                    lines += [
-                        f"모드: 🤖 VM Picks 자동매매 ✅",
-                        f"VM 매수금액: {amt:,}원 (종목당 고정)",
-                        f"손절가·목표가: vm_picks.json 절대값 사용",
-                        f"  → 손절율({sl_rate:.1%})·익절율({tp_rate:.1%})은 VM picks에 미적용",
-                        "",
-                        f"일괄청산: {clear_t}",
-                        f"  → holding_days 미달 포지션은 오버나잇 유지",
-                        "",
-                        "일반 전략 (VM picks 외 조건식 종목에만 적용):",
-                        f"  진입 전략: {stype}번 ({_STRATEGY_NAMES.get(stype, '?')})",
-                        f"  조건식: {cond}",
-                        f"  손절율: {sl_rate:.1%} | 익절율: {tp_rate:.1%}",
-                    ]
-                else:
-                    lines += [
-                        f"모드: 일반 전략 매매 (VM Picks OFF)",
-                        f"진입 전략: {stype}번 ({_STRATEGY_NAMES.get(stype, '?')})",
-                        f"조건식: {cond}",
-                        f"손절율: {sl_rate:.1%} | 익절율: {tp_rate:.1%}",
-                        f"일괄청산: {clear_t}",
-                    ]
+                bo_amt_str = (
+                    f"{bo_amt:,}원 (고정)" if bo_amt > 0
+                    else f"자본×{config.POSITION_RATIO:.0%} (비율)"
+                )
 
-                lines += [
+                lines = [
+                    "⚙️ <b>전략 설정 현황</b>\n",
+                    "━━━━━━━━━━━━━━━━━━━━━━",
+                    f"[1] 🤖 VM Picks 자동매매   {_flag(vm_on)}",
+                    f"    매수금액: {vm_amt:,}원/종목",
+                    f"    SL/TP: vm_picks.json 절대가 사용",
+                    "",
+                    f"[2] 📈 일반전략 (3분봉 돌파) {_flag(bo_on)}",
+                    f"    매수금액: {bo_amt_str}",
+                    f"    전략: {stype}번 ({_STRATEGY_NAMES.get(stype,'?')}) | 조건식: {cond}",
+                    f"    손절: {sl_rate:.1%} | 익절: {tp_rate:.1%} | 청산: {clear_t}",
+                    "",
+                    f"[3] ⚡ 삼성전자 롱숏전략     {_flag(lev_on)}",
+                    f"    매수금액: {lev_amt:,}원/회",
+                    f"    SL: {config.LEVERAGE_SL_RATE:.1%} | TP: {config.LEVERAGE_TP_RATE:.1%} "
+                    f"| 강제청산: {config.LEVERAGE_FORCE_EXIT}",
+                    "━━━━━━━━━━━━━━━━━━━━━━",
                     "\n📌 <b>변경 명령</b>",
-                    "/strategy 1~3 — 진입 전략 변경",
-                    "/strategy vm on|off — VM picks 모드 토글",
-                    "/strategy amount 2000000 — VM 매수금액 변경",
-                    "/strategy condition #이름 — 조건식 변경 (런타임)",
+                    "/strategy vm on|off — VM Picks 토글",
+                    "/strategy breakout on|off — 돌파 전략 토글",
+                    "/strategy lev on|off — 레버리지 전략 토글",
+                    "/strategy vm amount 1000000 — VM 매수금액 변경",
+                    "/strategy breakout amount 500000 — 돌파 매수금액 (0=비율)",
+                    "/strategy lev amount 500000 — 레버리지 매수금액 변경",
+                    "/strategy 1~3 — 돌파 진입 전략 번호 변경",
+                    "/strategy condition #이름 — 조건식 변경",
                 ]
                 return "\n".join(lines)
 
             sub = parts[0].lower()
 
-            # 전략 번호 변경
+            # ── 전략 번호 변경 ─────────────────────────────────────────────
             if sub in ("1", "2", "3"):
                 n_val = int(sub)
                 config.ENTRY_STRATEGY_TYPE = n_val
                 return f"✅ 진입 전략 → {n_val}번 ({_STRATEGY_NAMES[n_val]})"
 
-            # VM 모드 토글
+            # ── vm 서브커맨드 ──────────────────────────────────────────────
             if sub == "vm" and len(parts) >= 2:
-                onoff = parts[1].lower()
-                if onoff == "on":
+                cmd2 = parts[1].lower()
+                if cmd2 == "on":
+                    config.VM_PICKS_ENABLED = True
                     config.VM_MODE = True
-                    return "✅ VM Picks 모드 ON — vm_picks.json 기반 매매 활성화"
-                if onoff == "off":
-                    config.VM_MODE = False
-                    return "✅ VM Picks 모드 OFF — 일반 전략 매매로 전환"
-                return "❓ 사용법: /strategy vm on|off"
+                    return "✅ VM Picks 자동매매 ON"
+                if cmd2 == "off":
+                    config.VM_PICKS_ENABLED = False
+                    return "✅ VM Picks 자동매매 OFF (기존 포지션 SL/TP는 계속 감시)"
+                if cmd2 == "amount" and len(parts) >= 3:
+                    try:
+                        amt = int(parts[2].replace(",", ""))
+                        config.VM_TRADE_AMOUNT = amt
+                        _update_env_value("VM_TRADE_AMOUNT", str(amt))
+                        return f"✅ VM 매수금액 → {amt:,}원 (.env 저장)"
+                    except ValueError:
+                        return "❓ 사용법: /strategy vm amount 1000000"
+                return "❓ 사용법: /strategy vm on|off|amount <금액>"
 
-            # VM 매수금액 변경
-            if sub == "amount" and len(parts) >= 2:
-                try:
-                    amt = int(parts[1].replace(",", ""))
-                    config.VM_TRADE_AMOUNT = amt
-                    return f"✅ VM 매수금액 → {amt:,}원"
-                except ValueError:
-                    return "❓ 사용법: /strategy amount 1000000"
+            # ── breakout 서브커맨드 ────────────────────────────────────────
+            if sub == "breakout" and len(parts) >= 2:
+                cmd2 = parts[1].lower()
+                if cmd2 == "on":
+                    config.BREAKOUT_ENABLED = True
+                    return "✅ 일반전략(돌파) ON"
+                if cmd2 == "off":
+                    config.BREAKOUT_ENABLED = False
+                    return "✅ 일반전략(돌파) OFF (기존 포지션 청산 로직은 유지)"
+                if cmd2 == "amount" and len(parts) >= 3:
+                    try:
+                        amt = int(parts[2].replace(",", ""))
+                        config.BREAKOUT_TRADE_AMOUNT = amt
+                        _update_env_value("BREAKOUT_TRADE_AMOUNT", str(amt))
+                        amt_str = f"{amt:,}원 (고정)" if amt > 0 else f"자본×{config.POSITION_RATIO:.0%} (비율 복원)"
+                        return f"✅ 돌파 매수금액 → {amt_str} (.env 저장)"
+                    except ValueError:
+                        return "❓ 사용법: /strategy breakout amount 500000 (0=비율)"
+                return "❓ 사용법: /strategy breakout on|off|amount <금액>"
 
-            # 조건식 변경 (런타임)
+            # ── lev 서브커맨드 ─────────────────────────────────────────────
+            if sub == "lev" and len(parts) >= 2:
+                cmd2 = parts[1].lower()
+                if cmd2 == "on":
+                    config.LEVERAGE_ENABLED = True
+                    return "✅ 삼성전자 롱숏전략 ON"
+                if cmd2 == "off":
+                    config.LEVERAGE_ENABLED = False
+                    return "✅ 삼성전자 롱숏전략 OFF (보유 포지션은 SL/TP 계속 감시)"
+                if cmd2 == "amount" and len(parts) >= 3:
+                    try:
+                        amt = int(parts[2].replace(",", ""))
+                        config.LEVERAGE_AMOUNT = amt
+                        _update_env_value("LEVERAGE_AMOUNT", str(amt))
+                        return f"✅ 레버리지 매수금액 → {amt:,}원 (.env 저장)"
+                    except ValueError:
+                        return "❓ 사용법: /strategy lev amount 500000"
+                return "❓ 사용법: /strategy lev on|off|amount <금액>"
+
+            # ── 조건식 변경 ────────────────────────────────────────────────
             if sub == "condition" and len(parts) >= 2:
                 cond_name = " ".join(parts[1:])
                 if not self._kiwoom_ready:
@@ -1344,7 +1533,14 @@ class TradingBot:
                 self._change_condition_runtime(cond_name)
                 return f"🔄 조건식 변경 요청: {cond_name}"
 
-            return "❓ 사용법: /strategy [1~3 | vm on/off | amount <금액> | condition <이름>]"
+            return (
+                "❓ 사용법:\n"
+                "/strategy — 현황 조회\n"
+                "/strategy vm|breakout|lev on|off — 토글\n"
+                "/strategy vm|breakout|lev amount <금액> — 금액 변경\n"
+                "/strategy 1~3 — 진입 전략 번호\n"
+                "/strategy condition #이름 — 조건식"
+            )
 
         def cmd_validate(_args):
             """vm_picks.json 품질 검증 — 필드 누락·가격 논리·날짜 오류 체크"""
@@ -1393,19 +1589,31 @@ class TradingBot:
                 tp2         = p.get("take_profit_2") or 0
                 period      = p.get("holding_period", "?")
 
-                # 자동 계산된 buy_min/max
+                # 자동 계산된 buy_min/max (pending 있으면 실제 threshold 우선 사용)
                 no_range = buy_min_raw is None or buy_max_raw is None
-                if no_range and cur_price > 0:
-                    buy_min_eff = int(cur_price * 0.985)
-                    buy_max_eff = int(cur_price * 1.000)
-                    range_note  = f"{buy_min_eff:,}~{buy_max_eff:,}원 (자동: 기준가×-1.5%)"
-                elif not no_range:
+                if not no_range:
                     buy_min_eff = buy_min_raw or 0
                     buy_max_eff = buy_max_raw or 0
                     range_note  = f"{buy_min_eff:,}~{buy_max_eff:,}원"
+                    _no_range_note = None
                 else:
-                    buy_min_eff = buy_max_eff = 0
-                    range_note  = "⚠️ 미지정 + 기준가 없음"
+                    _pend_v = self.vm_manager.get_pending_for_code(code)
+                    if _pend_v:
+                        _ps_v = sorted(_pend_v, key=lambda p: p.tranche)
+                        buy_min_eff = min(p.price for p in _ps_v)
+                        buy_max_eff = max(p.price for p in _ps_v)
+                        _pp_v = [f"{p.tranche}차={p.price:,}" for p in _ps_v]
+                        range_note  = f"{buy_min_eff:,}~{buy_max_eff:,}원 (실시간 pending)"
+                        _no_range_note = f"   ℹ️ 실시간 재계산: {' / '.join(_pp_v)}원"
+                    elif cur_price > 0:
+                        buy_min_eff = int(cur_price * 0.985)
+                        buy_max_eff = int(cur_price * 1.000)
+                        range_note  = f"{buy_min_eff:,}~{buy_max_eff:,}원 (자동: 기준가×-1.5%)"
+                        _no_range_note = f"   ℹ️ 매수 범위 미지정 → 자동 계산 적용"
+                    else:
+                        buy_min_eff = buy_max_eff = 0
+                        range_note  = "⚠️ 미지정 + 기준가 없음"
+                        _no_range_note = f"   ⚠️ 매수 범위 미지정 + 기준가 없음"
 
                 # 검증 항목
                 issues = []
@@ -1429,8 +1637,8 @@ class TradingBot:
                 lines.append(f"   기준가: {cur_price:,}원 | 매수 범위: {range_note}")
                 lines.append(f"   손절: {sl:,}원 | 목표1: {tp1:,}원" + (f" | 목표2: {tp2:,}원" if tp2 else ""))
                 lines.append(f"   보유: {period}")
-                if no_range:
-                    lines.append(f"   ℹ️ 매수 범위 미지정 → 자동 계산 적용")
+                if no_range and _no_range_note:
+                    lines.append(_no_range_note)
                 for iss in issues:
                     lines.append(f"   ⚠️ {iss}")
                 lines.append("")
@@ -1439,15 +1647,150 @@ class TradingBot:
             lines.append(f"<b>결론: {verdict}</b>")
             return "\n".join(lines)
 
+        def cmd_lev(args):
+            """레버리지 전략 현황 + 삼성전자 신호 분석 / 강제청산"""
+            parts = args.strip().split()
+            lev_pos  = getattr(self.leverage_agent, "_position", None)
+            exited   = getattr(self.leverage_agent, "_force_exited_today", False)
+            now_str  = datetime.now().strftime("%H:%M:%S")
+            ag       = self.leverage_agent
+
+            # /lev exit — 강제 청산
+            if parts and parts[0].lower() == "exit":
+                if not lev_pos:
+                    return "⚡ 레버리지 전략: 보유 포지션 없음"
+                ctx = self.harness.get_context()
+                ctx["harness"] = self.harness
+                ag._exit("텔레그램강제청산", 0, ctx)
+                return "✅ 레버리지 포지션 강제 청산 요청 완료"
+
+            lines = [f"⚡ <b>삼성전자 롱숏 전략 [{now_str}]</b>"]
+            lines.append(
+                f"진입: {config.LEVERAGE_ENTRY_START}~{config.LEVERAGE_ENTRY_END} | "
+                f"강제청산: {config.LEVERAGE_FORCE_EXIT}"
+            )
+
+            # ── 포지션 현황 ────────────────────────────────────────────
+            if exited:
+                lines.append("\n🔴 오늘 강제청산 완료 (재진입 없음)")
+            elif not lev_pos:
+                lines.append("\n🟡 포지션 없음 — 신호 대기 중")
+            else:
+                last_prices = self.harness.get_context().get("last_prices", {})
+                cur = last_prices.get(lev_pos["code"], lev_pos["entry_price"])
+                pnl_rate = (cur - lev_pos["entry_price"]) / lev_pos["entry_price"] if lev_pos["entry_price"] else 0
+                pnl_amt  = (cur - lev_pos["entry_price"]) * lev_pos["qty"]
+                emoji    = "▲" if pnl_amt >= 0 else "▼"
+                dir_lbl  = "레버리지(롱)" if lev_pos["direction"] == "LEVERAGE" else "인버스(숏)"
+                lines += [
+                    f"\n{emoji} <b>{lev_pos['name']} ({lev_pos['code']})</b> [{dir_lbl}]",
+                    f"수량: {lev_pos['qty']}주 | 진입: {lev_pos['entry_price']:,}원 | 현재: {cur:,}원",
+                    f"평가손익: {pnl_amt:+,.0f}원 ({pnl_rate:+.2%})",
+                    f"SL: {lev_pos['stop_loss']:,}원 | TP: {lev_pos['take_profit']:,}원",
+                    f"진입시각: {lev_pos.get('entered_at', '?')[:19]}",
+                ]
+
+            # ── 삼성전자 신호 분석 ─────────────────────────────────────
+            lines.append("\n📊 <b>삼성전자 신호 분석</b>")
+            try:
+                market_data = self.harness.skills.get("market_data")
+                candles = market_data.get_candles(ag.SAMSUNG_CODE) if market_data else []
+                closed  = [c for c in candles if c.is_closed]
+
+                sam_price = self.harness.get_context().get("last_prices", {}).get(ag.SAMSUNG_CODE, 0)
+                price_str = f"{sam_price:,}원" if sam_price else "틱 없음"
+                lines.append(f"삼성전자 현재가: {price_str} | 확정봉 수: {len(closed)}개")
+
+                if len(closed) >= ag.SIGNAL_MA_PERIOD:
+                    ma   = sum(c.close for c in closed[-ag.SIGNAL_MA_PERIOD:]) / ag.SIGNAL_MA_PERIOD
+                    last = closed[-1]
+
+                    # 공통 지표 계산
+                    ma_ok_long  = last.close > ma
+                    ma_ok_short = last.close < ma
+                    ma_sym = "▲" if ma_ok_long else ("▼" if ma_ok_short else "=")
+                    lines.append(
+                        f"5MA: {ma:,.0f}원 | 종가: {last.close:,}원 → {ma_sym} "
+                        f"{'MA 위' if ma_ok_long else 'MA 아래' if ma_ok_short else 'MA 동일'}"
+                    )
+
+                    sample  = closed[-11:-1] if len(closed) >= 12 else closed[:-1]
+                    avg_vol = sum(c.volume for c in sample) / len(sample) if sample else 0
+                    threshold = avg_vol * ag.SIGNAL_VOL_RATIO
+                    vol_ok  = last.volume >= threshold
+                    vol_sym = "✅" if vol_ok else "❌"
+                    lines.append(
+                        f"거래량: {last.volume:,} vs 평균{avg_vol:,.0f}×{ag.SIGNAL_VOL_RATIO} "
+                        f"= {threshold:,.0f} {vol_sym}"
+                    )
+
+                    if len(closed) >= ag.SIGNAL_CONSEC:
+                        recent = closed[-ag.SIGNAL_CONSEC:]
+                        consec_strs = [
+                            f"{'▲양봉' if c.is_bullish else '▼음봉'}({c.close:,})"
+                            for c in recent
+                        ]
+                        all_bull = all(c.is_bullish for c in recent)
+                        all_bear = all(c.close < c.open for c in recent)
+                        lines.append(f"최근 2봉: {' / '.join(consec_strs)}")
+
+                        # LONG 조건 체크
+                        long_conds = [
+                            ("MA 위(롱)", ma_ok_long),
+                            ("연속양봉",  all_bull),
+                            ("거래량",    vol_ok),
+                        ]
+                        long_ok  = all(v for _, v in long_conds)
+                        long_row = " | ".join(
+                            f"{'✅' if v else '❌'}{n}" for n, v in long_conds
+                        )
+                        lines.append(f"🟢 롱조건: {long_row} → {'✅ 충족' if long_ok else '❌ 미충족'}")
+
+                        # SHORT 조건 체크
+                        short_conds = [
+                            ("MA 아래(숏)", ma_ok_short),
+                            ("연속음봉",    all_bear),
+                            ("거래량",      vol_ok),
+                        ]
+                        short_ok  = all(v for _, v in short_conds)
+                        short_row = " | ".join(
+                            f"{'✅' if v else '❌'}{n}" for n, v in short_conds
+                        )
+                        lines.append(f"🔴 숏조건: {short_row} → {'✅ 충족' if short_ok else '❌ 미충족'}")
+                    else:
+                        lines.append("최근 2봉: 데이터 부족")
+
+                    # 종합 신호
+                    signal = ag._calc_signal(candles)
+                    now_hm = datetime.now().strftime("%H:%M")
+                    in_time = config.LEVERAGE_ENTRY_START <= now_hm <= config.LEVERAGE_ENTRY_END
+                    if signal == "LEVERAGE":
+                        sig_str = "🟢 레버리지(롱) 진입 가능"
+                    elif signal == "INVERSE":
+                        sig_str = "🔴 인버스(숏) 진입 가능"
+                    else:
+                        sig_str = "⚪ 신호 없음"
+                    time_str = "" if in_time else f" (진입시간 외: {now_hm})"
+                    lines.append(f"→ <b>신호: {sig_str}{time_str}</b>")
+                else:
+                    lines.append(f"캔들 부족 ({len(closed)}/{ag.SIGNAL_MA_PERIOD}봉) — 분석 불가")
+            except Exception as e:
+                lines.append(f"⚠️ 신호 분석 실패: {e}")
+
+            if not exited:
+                lines.append("\n<i>/lev exit — 강제 청산</i>")
+            return "\n".join(lines)
+
         def cmd_help(_args):
             return (
                 "📖 <b>사용 가능한 명령</b>\n"
                 "/ping — 봇 응답 확인\n"
                 "/status — 오늘 손익·대기 현황\n"
                 "/pos — 보유 포지션 상세 (장 외 시간 가능)\n"
+                "/lev — 레버리지 전략 현황 (/lev exit 강제청산)\n"
                 "/validate — vm_picks.json 품질 검증\n"
                 "/picks — VM picks 종목·가격 현황\n"
-                "/strategy — 전략 설정 조회/변경\n"
+                "/strategy — 3전략 토글·금액 조회/변경\n"
                 "/sell — 전량 강제 청산\n"
                 "/reload — vm_picks.json 강제 재로드\n"
                 "/log — 최근 로그 15줄\n"
@@ -1458,6 +1801,7 @@ class TradingBot:
         n.register_command("ping",     cmd_ping)
         n.register_command("status",   cmd_status)
         n.register_command("pos",      cmd_pos)
+        n.register_command("lev",      cmd_lev)
         n.register_command("picks",    cmd_picks)
         n.register_command("validate", cmd_validate)
         n.register_command("strategy", cmd_strategy)
@@ -1478,9 +1822,30 @@ class TradingBot:
         status = self.risk.get_status()
         pnl_emoji = "📈" if status["today_pnl"] >= 0 else "📉"
         total_pos_count = len(positions) + len(vm_positions)
+
+        # 계좌 잔고 조회
+        acnt_line = None
+        try:
+            if self._kiwoom_ready:
+                balance = self.kiwoom.get_balance()
+                total = balance.get("total", 0)
+                available = balance.get("available", 0)
+                initial = self.risk._initial_capital
+                if config.IS_SIMULATION:
+                    acnt_line = f"💰 예수금: {total:,}원 | 주문가능: {available:,}원"
+                else:
+                    acnt_rate = (total - initial) / initial if initial > 0 and total > 0 else 0.0
+                    acnt_line = f"💰 총평가: {total:,}원 ({acnt_rate:+.2%}) | 주문가능: {available:,}원"
+        except Exception:
+            pass
+
         lines = [
             f"📊 <b>현황 [{datetime.now().strftime('%H:%M:%S')}]</b>",
             f"Kiwoom: {kiwoom_str}",
+        ]
+        if acnt_line:
+            lines.append(acnt_line)
+        lines += [
             f"{pnl_emoji} 오늘 손익: {status['today_pnl']:+,.0f}원 ({status['pnl_rate']:+.2%}) | 거래: {status['trade_count']}회",
             f"대기: {len(waiting)}종목 | 보유: {total_pos_count}종목",
         ]
@@ -1509,6 +1874,16 @@ class TradingBot:
             lines.append(f"\n⏳ <b>VM 매수 대기열 ({len(vm_queue)}개, 예수금 부족)</b>")
             for item in vm_queue:
                 lines.append(f"  - [{item['name']}({item['code']})]")
+        # 레버리지 전략 요약
+        lev_pos = getattr(self.leverage_agent, "_position", None)
+        if lev_pos:
+            cur_lev = last_prices.get(lev_pos["code"], lev_pos["entry_price"])
+            rate_lev = (cur_lev - lev_pos["entry_price"]) / lev_pos["entry_price"] if lev_pos["entry_price"] else 0
+            dir_lbl  = "롱" if lev_pos["direction"] == "LEVERAGE" else "숏"
+            lines.append(
+                f"\n⚡ <b>레버리지</b> {lev_pos['name']}({dir_lbl}) "
+                f"{lev_pos['qty']}주 {rate_lev:+.2%} | /lev 상세"
+            )
         return "\n".join(lines)
 
     # ─────────────────────────────────────────
@@ -1563,6 +1938,40 @@ class TradingBot:
             else:
                 remaining.append(item)  # 여전히 예수금 부족 → 계속 대기
         self.harness.get_context()["vm_buy_queue"] = remaining
+
+    def _check_pending_fills(self):
+        """틱 누락 대비 60s 폴백 — 미체결 pending 주문에 대해 ka10001 현재가 조회 후 fill 추론."""
+        pending_codes = {
+            p.code for p in self.vm_manager._pending.values() if not p.filled
+        }
+        for code in pending_codes:
+            try:
+                info = self.kiwoom.get_stock_info(code, fast=True)
+            except Exception:
+                continue
+            if not info or info.get("current_price", 0) <= 0:
+                continue
+            current_price = int(info["current_price"])
+            for pending in self.vm_manager.get_pending_for_code(code):
+                if current_price <= pending.price:
+                    filled = self.vm_manager.on_fill_detected(pending.ord_no, current_price)
+                    if filled:
+                        logger.info(
+                            f"[Bot] 폴링 fill 추론: {pending.name}({code}) "
+                            f"{pending.tranche}차 @ {current_price:,}원"
+                        )
+                        self.trade_logger.log_trade(
+                            code=code, name=pending.name, side="BUY",
+                            qty=pending.qty, price=current_price,
+                            reason=f"VM지정분할매수{pending.tranche}차(폴백)"
+                        )
+                        if self.notifier:
+                            self.notifier.send(
+                                f"🟢 <b>VM 분할매수 {pending.tranche}차 체결</b> [{pending.name}({code})]\n"
+                                f"{pending.qty}주 @ {current_price:,}원 "
+                                f"({'2/3 지점' if pending.tranche == 1 else '1/3 지점'})\n"
+                                f"손절가: {pending.stop_loss:,}원 | 목표가: {pending.take_profit:,}원"
+                            )
 
     # ─────────────────────────────────────────
     # 헬스체크 + DB 백업
@@ -1685,18 +2094,12 @@ class TradingBot:
         if file_date and file_date != today_str:
             issues.append(f"⚠️ 파일 날짜 불일치: {file_date} (오늘: {today_str})")
 
-        null_range_names = []
         for p in picks_list:
             name = p.get("name", p.get("code", "?"))
-            if p.get("buy_min") is None or p.get("buy_max") is None:
-                null_range_names.append(name)
             if not p.get("stop_loss"):
                 issues.append(f"⚠️ {name}: 손절가 없음")
             if not p.get("take_profit_1"):
                 issues.append(f"⚠️ {name}: 목표가 없음")
-
-        if null_range_names:
-            issues.append(f"ℹ️ 매수 범위 미지정 → 자동 계산: {', '.join(null_range_names)}")
 
         if issues:
             msg = (

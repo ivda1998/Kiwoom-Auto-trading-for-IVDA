@@ -19,7 +19,10 @@ class KiwoomHarness(BaseHarness):
         self.kiwoom.add_condition_callback(self._on_condition)
 
     def _on_tick(self, tick: dict):
-        """실시간 틱 이벤트를 수신하여 에이전트에 중계합니다."""
+        """실시간 틱 이벤트를 수신하여 캔들 빌더 갱신 후 에이전트에 중계합니다."""
+        market_data = self.skills.get("market_data")
+        if market_data:
+            market_data.on_tick(tick)
         self.broadcast_event("TICK", tick)
 
     def _on_condition(self, code: str, name: str, action: str):

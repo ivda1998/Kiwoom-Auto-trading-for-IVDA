@@ -59,7 +59,9 @@ class BreakoutTradingAgent(BaseAgent):
         vm_manager  = harness.get_context().get("vm_manager")
         custom_conf = config.get_custom_targets().get(code)
         has_vm_pos  = bool(vm_manager and vm_manager.get_by_code(code))
-        if vm_manager and (custom_conf or has_vm_pos):
+        vm_enabled  = getattr(config, "VM_PICKS_ENABLED", True)
+        if vm_manager and (has_vm_pos or (vm_enabled and custom_conf)):
+            # has_vm_pos: 기존 포지션 SL/TP는 항상 감시; 신규 진입은 vm_enabled 시만
             self._handle_vm_tick(code, price, harness, vm_manager, custom_conf or {})
             return  # 일반 전략 로직 건너뜀
 
@@ -92,6 +94,8 @@ class BreakoutTradingAgent(BaseAgent):
             return
 
         # 1번 전략: 20/60일 신고가 ±NEAR_HIGH_BUY_THRESHOLD 이내 즉시 매수
+        if not getattr(config, "BREAKOUT_ENABLED", True):
+            return
         if getattr(config, "ENTRY_STRATEGY_TYPE", 1) == 1:
             for high in [state.high_20, state.high_60]:
                 if high > 0 and abs(price - high) / high <= config.NEAR_HIGH_BUY_THRESHOLD:
@@ -120,7 +124,9 @@ class BreakoutTradingAgent(BaseAgent):
         signal = self.strategy.on_candle_close(candle, candles)
 
         if signal == SignalType.BUY:
-            if self._can_buy_time():
+            if not getattr(config, "BREAKOUT_ENABLED", True):
+                logger.debug(f"[Agent] 돌파 전략 비활성화 상태 — {code} 매수 신호 무시")
+            elif self._can_buy_time():
                 self._execute_buy_at(code, candle.close, harness, execution)
             else:
                 logger.debug(f"[Agent] 매수 신호 발생했으나 매수 제한 시간 경과로 진입 보류")
@@ -352,6 +358,10 @@ class BreakoutTradingAgent(BaseAgent):
             sl_price = pos.stop_loss  or 0
             tp_price = pos.take_profit or 0
             if sl_price > 0 and price <= sl_price:
+                tp_ord_no = pos.tp_ord_no
+                # SIM_ prefix는 가상 주문이므로 취소 API 불필요 (모의투자)
+                if tp_ord_no and not tp_ord_no.startswith("SIM_"):
+                    harness.kiwoom.cancel_order(tp_ord_no, code, pos.qty)
                 ok = vm_manager.sell_vm(pos.position_id, price, "손절")
                 if ok:
                     pnl = pos.pnl(price)
@@ -368,107 +378,128 @@ class BreakoutTradingAgent(BaseAgent):
                 continue
 
             if tp_price > 0 and price >= tp_price:
-                ok = vm_manager.sell_vm(pos.position_id, price, "목표가청산")
-                if ok:
-                    pnl = pos.pnl(price)
+                # 실전: tp_ord_no로 지정가 매도가 거래소에 등록돼 있음 → fill 추론
+                # 모의투자: tp_ord_no가 "SIM_" prefix이므로 실제 시장가 매도 필요
+                is_real_tp = pos.tp_ord_no and not pos.tp_ord_no.startswith("SIM_")
+                if is_real_tp:
+                    closed = vm_manager.infer_tp_filled(pos.position_id, price)
+                    if closed:
+                        pnl = closed.pnl(price)
+                        if notifier:
+                            notifier.send(
+                                f"🟢 <b>VM 목표가 청산</b> [{closed.name}({code})]\n"
+                                f"{closed.qty}주 @ {price:,}원 | 손익: {pnl:+,.0f}원"
+                            )
+                        self.trade_logger.log_trade(
+                            code=code, name=closed.name, side="SELL",
+                            qty=closed.qty, price=price,
+                            pnl=pnl, pnl_rate=closed.pnl_rate(price), reason="목표가청산"
+                        )
+                else:
+                    ok = vm_manager.sell_vm(pos.position_id, price, "목표가청산")
+                    if ok:
+                        pnl = pos.pnl(price)
+                        if notifier:
+                            notifier.send(
+                                f"🟢 <b>VM 목표가 청산</b> [{pos.name}({code})]\n"
+                                f"{pos.qty}주 @ {price:,}원 | 손익: {pnl:+,.0f}원"
+                            )
+                        self.trade_logger.log_trade(
+                            code=code, name=pos.name, side="SELL",
+                            qty=pos.qty, price=price,
+                            pnl=pnl, pnl_rate=pos.pnl_rate(price), reason="목표가청산"
+                        )
+
+        # 2. 지정가 주문 fill 추론 (pending 주문)
+        for pending in vm_manager.get_pending_for_code(code):
+            if price <= pending.price:
+                filled = vm_manager.on_fill_detected(pending.ord_no, price)
+                if filled:
                     if notifier:
                         notifier.send(
-                            f"🟢 <b>VM 목표가 청산</b> [{pos.name}({code})]\n"
-                            f"{pos.qty}주 @ {price:,}원 | 손익: {pnl:+,.0f}원"
+                            f"🟢 <b>VM 분할매수 {pending.tranche}차 체결</b> [{pending.name}({code})]\n"
+                            f"{pending.qty}주 @ {price:,}원 "
+                            f"({'2/3 지점' if pending.tranche == 1 else '1/3 지점'})\n"
+                            f"손절가: {pending.stop_loss:,}원 | 목표가: {pending.take_profit:,}원"
                         )
                     self.trade_logger.log_trade(
-                        code=code, name=pos.name, side="SELL",
-                        qty=pos.qty, price=price,
-                        pnl=pnl, pnl_rate=pos.pnl_rate(price), reason="목표가청산"
+                        code=code, name=pending.name, side="BUY",
+                        qty=pending.qty, price=price,
+                        reason=f"VM지정분할매수{pending.tranche}차"
                     )
 
-        # 2. 신규 매수 체크 (분할 매수: 1/3 지점 50% → 2/3 지점 50%)
-        if not self._can_buy_time():
+    @staticmethod
+    def _krx_tick(price: int) -> int:
+        """KRX 호가 단위 반환."""
+        if price < 1_000:    return 1
+        if price < 5_000:    return 5
+        if price < 10_000:   return 10
+        if price < 50_000:   return 50
+        if price < 100_000:  return 100
+        if price < 500_000:  return 500
+        return 1_000
+
+    def _floor_tick(self, price: int) -> int:
+        """호가 단위 기준 내림 (지정가 매수는 보수적으로 반내림)."""
+        tick = self._krx_tick(price)
+        return (price // tick) * tick
+
+    def _place_vm_limit_orders(self, code: str, conf: dict, vm_manager, kiwoom=None, notifier=None):
+        """vm_picks 로드 시 1회 호출 — threshold2(1차)/threshold1(2차) 지정가 매수 발주."""
+        buy_min = conf.get("buy_min") or 0
+        buy_max = conf.get("buy_max") or 0
+
+        # no_range=True: vm_picks.json의 stale current_price 대신 실시간 가격으로 범위 재계산
+        if conf.get("no_range"):
+            if kiwoom is None:
+                logger.warning(f"[Agent] {code} no_range=True이나 kiwoom 미전달 — 발주 건너뜀")
+                return
+            try:
+                info = kiwoom.get_stock_info(code, fast=True)
+                if not info or info.get("current_price", 0) <= 0:
+                    logger.warning(f"[Agent] {code} 실시간 가격 조회 실패 — 발주 건너뜀")
+                    return
+                ref = int(info["current_price"])
+                buy_max = ref
+                buy_min = int(ref * 0.985)
+                logger.info(
+                    f"[Agent] {conf.get('name', code)}({code}) 매수범위 실시간 재계산: "
+                    f"{buy_min:,}~{buy_max:,} (현재가 {ref:,})"
+                )
+            except Exception as e:
+                logger.warning(f"[Agent] {code} 실시간 가격 조회 오류 — 발주 건너뜀: {e}")
+                return
+
+        if not (buy_min > 0 and buy_max > 0 and buy_max > buy_min):
             return
-
-        buy_min    = custom_conf.get("buy_min") or 0
-        buy_max    = custom_conf.get("buy_max") or 0
-        created_at = custom_conf.get("created_at", "")
-
-        # buy_min/max 둘 다 0이면 진입 불가 (config에서 미지정 시 1/9999999로 설정됨)
-        if buy_min == 0 and buy_max == 0:
+        created_at = conf.get("created_at", "")
+        if vm_manager.has_pending(code, created_at) or vm_manager.has_any(code):
             return
-        # 매수 범위 밖이면 리턴
-        if price < buy_min or price > buy_max:
-            return
-
-        sl   = custom_conf.get("stop_loss") or 0
-        tp   = custom_conf.get("take_profit") or 0
-        name = custom_conf.get("name", code)
-
-        # 매수 범위를 3등분한 임계값
         buy_range  = buy_max - buy_min
-        threshold1 = buy_min + buy_range / 3        # 1/3 지점 → 1차(50%) 매수
-        threshold2 = buy_min + buy_range * 2 / 3    # 2/3 지점 → 2차(50%) 매수
+        threshold2 = self._floor_tick(int(buy_min + buy_range * 2 / 3))
+        threshold1 = self._floor_tick(int(buy_min + buy_range / 3))
         half_amount = max(1, getattr(config, "VM_TRADE_AMOUNT", 1_000_000) // 2)
-
-        vm_buy_queue = harness.get_context().get("vm_buy_queue", [])
-
-        def _queued_tranches():
-            return sum(
-                1 for q in harness.get_context().get("vm_buy_queue", [])
-                if q["code"] == code and q["created_at"] == created_at
+        sl   = conf.get("stop_loss") or 0
+        tp   = conf.get("take_profit") or 0
+        name = conf.get("name", code)
+        qty1 = max(1, half_amount // threshold2)
+        qty2 = max(1, half_amount // threshold1)
+        ord1 = vm_manager.place_limit_buy(code, name, 1, threshold2, qty1, sl, tp, created_at)
+        ord2 = vm_manager.place_limit_buy(code, name, 2, threshold1, qty2, sl, tp, created_at)
+        if ord1 or ord2:
+            logger.info(
+                f"[Agent] VM 지정가 매수 발주: {name}({code}) "
+                f"1차={threshold2:,}원 2차={threshold1:,}원"
             )
-
-        def _do_buy(tranche: int):
-            """tranche 번째 매수 시도 — 실패 시 대기열에 추가."""
-            ok = vm_manager.buy_vm(code, name, price, sl, tp, created_at,
-                                   amount=half_amount)
-            if ok:
-                pos_list = vm_manager.get_by_code(code)
-                new_pos  = pos_list[-1] if pos_list else None
-                qty      = new_pos.qty if new_pos else max(1, int(half_amount / price))
-                self.trade_logger.log_trade(
-                    code=code, name=name, side="BUY",
-                    qty=qty, price=price, reason=f"VM분할매수{tranche}차"
+            if notifier:
+                sl_str = f"{sl:,}원" if sl else "없음"
+                tp_str = f" | 목표가: {tp:,}원" if tp else ""
+                notifier.send(
+                    f"✅ <b>VM 분할매수 발주</b> [{name}({code})]\n"
+                    f"1차(상): {threshold2:,}원 ({qty1}주)\n"
+                    f"2차(하): {threshold1:,}원 ({qty2}주)\n"
+                    f"손절가: {sl_str}{tp_str}"
                 )
-                if notifier:
-                    notifier.send(
-                        f"🟢 <b>VM 분할매수 {tranche}차</b> [{name}({code})]\n"
-                        f"{qty}주 @ {price:,}원 "
-                        f"({'1/3' if tranche == 1 else '2/3'} 지점)\n"
-                        f"손절가: {sl:,}원 | 목표가: {tp:,}원"
-                    )
-                logger.info(
-                    f"[Agent] VM {tranche}차 매수 완료: {name}({code}) "
-                    f"{qty}주 @ {price:,}원"
-                )
-                return True
-            else:
-                queue = harness.get_context().setdefault("vm_buy_queue", [])
-                queue.append({
-                    "code": code, "name": name,
-                    "stop_loss": sl, "take_profit": tp,
-                    "created_at": created_at,
-                    "amount": half_amount,
-                    "tranche": tranche,
-                })
-                logger.info(
-                    f"[Agent] VM {tranche}차 대기열 추가: {name}({code}) — 예수금 부족"
-                )
-                return False
-
-        # ── 1차 매수: price >= threshold1, 보유 트랜치 0개 ──────────────────
-        tranche_count = vm_manager.count_positions_for_date(code, created_at)
-        total = tranche_count + _queued_tranches()
-
-        if total == 0 and price >= threshold1:
-            bought = _do_buy(1)
-            if not bought:
-                return  # 예수금 부족 → 2차도 불가
-            return  # 1차 성공 후 즉시 리턴 — 2차는 다음 틱에서 평가
-
-        # ── 2차 매수: price >= threshold2, 보유 트랜치 1개 ──────────────────
-        tranche_count = vm_manager.count_positions_for_date(code, created_at)
-        total = tranche_count + _queued_tranches()
-
-        if total == 1 and price >= threshold2:
-            _do_buy(2)
 
     def _in_trade_hours(self) -> bool:
         """config.is_trade_hours() 래퍼 — 단일 진실 공급원 유지."""
