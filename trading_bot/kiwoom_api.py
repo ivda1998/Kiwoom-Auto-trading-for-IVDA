@@ -638,18 +638,18 @@ class KiwoomAPI:
                     return abs(int(str(v).replace(",", "").lstrip("+-") or "0"))
                 rows.append({
                     "datetime": item.get("cntr_tm", ""),
-                    "open":     _int(item.get("opn_prc",  0)),
-                    "high":     _int(item.get("high_prc", 0)),
-                    "low":      _int(item.get("low_prc",  0)),
-                    "close":    _int(item.get("cur_prc",  0)),
-                    "volume":   _int(item.get("trde_qty", 0)),
+                    "open":     _int(item.get("open_pric", 0)),
+                    "high":     _int(item.get("high_pric", 0)),
+                    "low":      _int(item.get("low_pric",  0)),
+                    "close":    _int(item.get("cur_prc",   0)),
+                    "volume":   _int(item.get("trde_qty",  0)),
                 })
 
             df = pd.DataFrame(rows)
             return df.iloc[::-1].reset_index(drop=True)
 
         except Exception as e:
-            logger.debug(f"[KiwoomAPI] {code} 분봉 실패: {e}")
+            logger.warning(f"[KiwoomAPI] {code} 분봉 실패: {e}")
             return None
 
     # ─────────────────────────────────────────

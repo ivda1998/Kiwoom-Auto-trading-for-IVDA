@@ -186,8 +186,12 @@ class MarketDataSkill(BaseSkill):
         # 과거 3분봉 로딩 (전략 판단용 초기 히스토리)
         try:
             df = self.kiwoom.get_minute_data(
-                code, tick_range=config.CANDLE_INTERVAL, count=60
+                code, tick_range=config.CANDLE_INTERVAL, count=150
             )
+            if df is None or df.empty:
+                logger.warning(f"[DataManager] {code} 초기 분봉 API 응답 없음 — refresh에서 자가복구 예정")
+                self._builders[code] = builder
+                return builder
             now_dt = datetime.now()
             skipped_future = 0
             for _, row in df.iterrows():
@@ -262,6 +266,11 @@ class MarketDataSkill(BaseSkill):
         builder = self._builders.get(code)
         if not builder:
             return -1
+
+        # 초기 로드 실패(빈 builder)면 전체 로드로 자가복구
+        if not builder._candles:
+            count = 150
+            logger.info(f"[MarketData] {code} builder 비어있음 → 전체 로드(count=150) 자가복구")
 
         last_dt = builder._candles[-1].datetime if builder._candles else datetime.min
 
