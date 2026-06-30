@@ -86,27 +86,15 @@ class ExecutionSkill(BaseSkill):
 
         screen_no = str(self._next_screen())
 
-        if config.IS_SIMULATION:
-            # 모의투자: 시장가 매수
-            ret = self.kiwoom.send_order(
-                order_name=f"매수_{code}",
-                screen_no=screen_no,
-                code=code,
-                qty=qty,
-                price=0,           # 시장가 = 0
-                order_type=1,      # 신규매수
-                hoga_type="03"     # 시장가
-            )
-        else:
-            ret = self.kiwoom.send_order(
-                order_name=f"매수_{code}",
-                screen_no=screen_no,
-                code=code,
-                qty=qty,
-                price=0,
-                order_type=1,
-                hoga_type="03"
-            )
+        ret, order_no = self.kiwoom.send_order(
+            order_name=f"매수_{code}",
+            screen_no=screen_no,
+            code=code,
+            qty=qty,
+            price=0,           # 시장가 = 0
+            order_type=1,      # 신규매수
+            hoga_type="03"     # 시장가
+        )
 
         if ret == 0:
             pos = Position(
@@ -116,7 +104,7 @@ class ExecutionSkill(BaseSkill):
                 entry_price=current_price,
                 stoploss_price=stoploss_price,
                 entered_at=datetime.now(),
-                order_no=screen_no
+                order_no=order_no
             )
             self._positions[code] = pos
             self._today_traded.add(code)
@@ -146,7 +134,7 @@ class ExecutionSkill(BaseSkill):
             return False
 
         screen_no = str(self._next_screen())
-        ret = self.kiwoom.send_order(
+        ret, order_no = self.kiwoom.send_order(
             order_name=f"매도_{code}",
             screen_no=screen_no,
             code=code,
