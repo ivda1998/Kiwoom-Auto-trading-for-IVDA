@@ -301,6 +301,12 @@ LEVERAGE_ENTRY_START  = "09:00"
 LEVERAGE_ENTRY_END    = "15:00"
 LEVERAGE_FORCE_EXIT   = "15:20"
 
+# 신호 전략 선택: "BASIC" (연속봉+5MA) | "MACD_HA" (MACD+하이킨아시)
+LEVERAGE_STRATEGY     = _os.environ.get("LEVERAGE_STRATEGY", "BASIC").upper()
+LEVERAGE_MACD_FAST    = int(_os.environ.get("LEVERAGE_MACD_FAST",   "12"))
+LEVERAGE_MACD_SLOW    = int(_os.environ.get("LEVERAGE_MACD_SLOW",   "26"))
+LEVERAGE_MACD_SIGNAL  = int(_os.environ.get("LEVERAGE_MACD_SIGNAL", "9"))
+
 # ─────────────────────────────────────────
 # 로그 / DB
 # ─────────────────────────────────────────

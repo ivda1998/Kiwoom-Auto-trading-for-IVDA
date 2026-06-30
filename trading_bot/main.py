@@ -1443,6 +1443,8 @@ class TradingBot:
                     "",
                     f"[3] ⚡ 삼성전자 롱숏전략     {_flag(lev_on)}",
                     f"    매수금액: {lev_amt:,}원/회",
+                    f"    전략: {getattr(config,'LEVERAGE_STRATEGY','BASIC')} "
+                    f"({'MACD+하이킨아시' if getattr(config,'LEVERAGE_STRATEGY','BASIC')=='MACD_HA' else '연속봉+5MA+거래량'})",
                     f"    SL: {config.LEVERAGE_SL_RATE:.1%} | TP: {config.LEVERAGE_TP_RATE:.1%} "
                     f"| 강제청산: {config.LEVERAGE_FORCE_EXIT}",
                     "━━━━━━━━━━━━━━━━━━━━━━",
@@ -1453,6 +1455,7 @@ class TradingBot:
                     "/strategy vm amount 1000000 — VM 매수금액 변경",
                     "/strategy breakout amount 500000 — 돌파 매수금액 (0=비율)",
                     "/strategy lev amount 500000 — 레버리지 매수금액 변경",
+                    "/strategy lev strategy basic|macd_ha — 레버리지 전략 변경",
                     "/strategy 1~3 — 돌파 진입 전략 번호 변경",
                     "/strategy condition #이름 — 조건식 변경",
                 ]
@@ -1523,7 +1526,15 @@ class TradingBot:
                         return f"✅ 레버리지 매수금액 → {amt:,}원 (.env 저장)"
                     except ValueError:
                         return "❓ 사용법: /strategy lev amount 500000"
-                return "❓ 사용법: /strategy lev on|off|amount <금액>"
+                if cmd2 == "strategy" and len(parts) >= 3:
+                    chosen = parts[2].upper()
+                    if chosen in ("BASIC", "MACD_HA"):
+                        config.LEVERAGE_STRATEGY = chosen
+                        _update_env_value("LEVERAGE_STRATEGY", chosen)
+                        label = "연속봉+5MA+거래량" if chosen == "BASIC" else "MACD+하이킨아시"
+                        return f"✅ 레버리지 전략 → {chosen} ({label}) (.env 저장)"
+                    return "❓ 사용법: /strategy lev strategy basic|macd_ha"
+                return "❓ 사용법: /strategy lev on|off|amount <금액>|strategy basic|macd_ha"
 
             # ── 조건식 변경 ────────────────────────────────────────────────
             if sub == "condition" and len(parts) >= 2:
@@ -1691,7 +1702,9 @@ class TradingBot:
                 ]
 
             # ── 삼성전자 신호 분석 ─────────────────────────────────────
-            lines.append("\n📊 <b>삼성전자 신호 분석</b>")
+            lev_strategy = getattr(config, "LEVERAGE_STRATEGY", "BASIC")
+            strat_label  = "MACD+하이킨아시" if lev_strategy == "MACD_HA" else "연속봉+5MA+거래량"
+            lines.append(f"\n📊 <b>삼성전자 신호 분석</b> [전략: {strat_label}]")
             try:
                 market_data = self.harness.skills.get("market_data")
                 candles = market_data.get_candles(ag.SAMSUNG_CODE) if market_data else []
@@ -1701,83 +1714,133 @@ class TradingBot:
                 price_str = f"{sam_price:,}원" if sam_price else "틱 없음"
                 lines.append(f"삼성전자 현재가: {price_str} | 확정봉 수: {len(closed)}개")
 
-                if len(closed) >= ag.SIGNAL_MA_PERIOD:
-                    ma   = sum(c.close for c in closed[-ag.SIGNAL_MA_PERIOD:]) / ag.SIGNAL_MA_PERIOD
-                    last = closed[-1]
-
-                    # 공통 지표 계산
-                    ma_ok_long  = last.close > ma
-                    ma_ok_short = last.close < ma
-                    ma_sym = "▲" if ma_ok_long else ("▼" if ma_ok_short else "=")
-                    lines.append(
-                        f"5MA: {ma:,.0f}원 | 최신봉[{last.datetime.strftime('%H:%M')}] "
-                        f"종가: {last.close:,}원 → {ma_sym} "
-                        f"{'MA 위' if ma_ok_long else 'MA 아래' if ma_ok_short else 'MA 동일'}"
-                    )
-
-                    sample  = closed[-11:-1] if len(closed) >= 12 else closed[:-1]
-                    avg_vol = sum(c.volume for c in sample) / len(sample) if sample else 0
-                    threshold = avg_vol * ag.SIGNAL_VOL_RATIO
-                    vol_ok  = last.volume >= threshold
-                    vol_sym = "✅" if vol_ok else "❌"
-                    lines.append(
-                        f"거래량: {last.volume:,} vs 평균{avg_vol:,.0f}×{ag.SIGNAL_VOL_RATIO} "
-                        f"= {threshold:,.0f} {vol_sym}"
-                    )
-
-                    if len(closed) >= ag.SIGNAL_CONSEC:
-                        recent = closed[-ag.SIGNAL_CONSEC:]
-                        consec_strs = [
-                            f"{'▲양봉' if c.is_bullish else '▼음봉'}[{c.datetime.strftime('%H:%M')}] "
-                            f"O={c.open:,} C={c.close:,} V={c.volume:,}"
-                            for c in recent
-                        ]
-                        all_bull = all(c.is_bullish for c in recent)
-                        all_bear = all(c.close < c.open for c in recent)
-                        lines.append("최근 2봉:")
-                        for s in consec_strs:
-                            lines.append(f"  {s}")
-
-                        # LONG 조건 체크
-                        long_conds = [
-                            ("MA 위(롱)", ma_ok_long),
-                            ("연속양봉",  all_bull),
-                            ("거래량",    vol_ok),
-                        ]
-                        long_ok  = all(v for _, v in long_conds)
-                        long_row = " | ".join(
-                            f"{'✅' if v else '❌'}{n}" for n, v in long_conds
-                        )
-                        lines.append(f"🟢 롱조건: {long_row} → {'✅ 충족' if long_ok else '❌ 미충족'}")
-
-                        # SHORT 조건 체크
-                        short_conds = [
-                            ("MA 아래(숏)", ma_ok_short),
-                            ("연속음봉",    all_bear),
-                            ("거래량",      vol_ok),
-                        ]
-                        short_ok  = all(v for _, v in short_conds)
-                        short_row = " | ".join(
-                            f"{'✅' if v else '❌'}{n}" for n, v in short_conds
-                        )
-                        lines.append(f"🔴 숏조건: {short_row} → {'✅ 충족' if short_ok else '❌ 미충족'}")
+                if lev_strategy == "MACD_HA":
+                    # ── MACD + 하이킨아시 디스플레이 ─────────────────────
+                    fast = getattr(config, "LEVERAGE_MACD_FAST",   12)
+                    slow = getattr(config, "LEVERAGE_MACD_SLOW",   26)
+                    sig  = getattr(config, "LEVERAGE_MACD_SIGNAL",  9)
+                    min_c = slow + sig - 1
+                    if len(closed) < min_c:
+                        lines.append(f"캔들 부족 ({len(closed)}/{min_c}봉) — MACD 분석 불가")
                     else:
-                        lines.append("최근 2봉: 데이터 부족")
+                        last = closed[-1]
+                        lines.append(
+                            f"최신봉[{last.datetime.strftime('%H:%M')}] "
+                            f"O={last.open:,} H={last.high:,} L={last.low:,} C={last.close:,}"
+                        )
+                        # HA 계산
+                        ha      = ag._calc_heikin_ashi(closed)
+                        last_ha = ha[-1]
+                        ha_bull = last_ha["close"] > last_ha["open"]
+                        ha_bear = last_ha["close"] < last_ha["open"]
+                        ha_dir  = "▲HA양봉" if ha_bull else ("▼HA음봉" if ha_bear else "━HA도지")
+                        lines.append(
+                            f"HA캔들: {ha_dir} "
+                            f"(HA_O={last_ha['open']:,.0f} HA_C={last_ha['close']:,.0f})"
+                        )
+                        # MACD 계산
+                        macd_val, signal_val = ag._calc_macd_values(
+                            [c.close for c in closed], fast, slow, sig
+                        )
+                        if macd_val is not None:
+                            macd_sym = "▲ MACD>Signal ✅" if macd_val > signal_val else "▼ MACD<Signal ❌"
+                            lines.append(
+                                f"MACD({fast}/{slow}/{sig}): {macd_val:+.2f} | "
+                                f"Signal: {signal_val:+.2f} → {macd_sym}"
+                            )
+                            # 롱/숏 조건
+                            long_conds  = [("MACD>Signal", macd_val > signal_val), ("HA양봉", ha_bull)]
+                            short_conds = [("MACD<Signal", macd_val < signal_val), ("HA음봉", ha_bear)]
+                            long_ok  = all(v for _, v in long_conds)
+                            short_ok = all(v for _, v in short_conds)
+                            lines.append(
+                                "🟢 롱조건: " +
+                                " | ".join(f"{'✅' if v else '❌'}{n}" for n, v in long_conds) +
+                                f" → {'✅ 충족' if long_ok else '❌ 미충족'}"
+                            )
+                            lines.append(
+                                "🔴 숏조건: " +
+                                " | ".join(f"{'✅' if v else '❌'}{n}" for n, v in short_conds) +
+                                f" → {'✅ 충족' if short_ok else '❌ 미충족'}"
+                            )
 
-                    # 종합 신호
-                    signal = ag._calc_signal(candles)
-                    now_hm = datetime.now().strftime("%H:%M")
-                    in_time = config.LEVERAGE_ENTRY_START <= now_hm <= config.LEVERAGE_ENTRY_END
-                    if signal == "LEVERAGE":
-                        sig_str = "🟢 레버리지(롱) 진입 가능"
-                    elif signal == "INVERSE":
-                        sig_str = "🔴 인버스(숏) 진입 가능"
-                    else:
-                        sig_str = "⚪ 신호 없음"
-                    time_str = "" if in_time else f" (진입시간 외: {now_hm})"
-                    lines.append(f"→ <b>신호: {sig_str}{time_str}</b>")
                 else:
-                    lines.append(f"캔들 부족 ({len(closed)}/{ag.SIGNAL_MA_PERIOD}봉) — 분석 불가")
+                    # ── 기본전략 디스플레이 (연속봉 + 5MA + 거래량) ──────
+                    if len(closed) >= ag.SIGNAL_MA_PERIOD:
+                        ma   = sum(c.close for c in closed[-ag.SIGNAL_MA_PERIOD:]) / ag.SIGNAL_MA_PERIOD
+                        last = closed[-1]
+
+                        ma_ok_long  = last.close > ma
+                        ma_ok_short = last.close < ma
+                        ma_sym = "▲" if ma_ok_long else ("▼" if ma_ok_short else "=")
+                        lines.append(
+                            f"5MA: {ma:,.0f}원 | 최신봉[{last.datetime.strftime('%H:%M')}] "
+                            f"종가: {last.close:,}원 → {ma_sym} "
+                            f"{'MA 위' if ma_ok_long else 'MA 아래' if ma_ok_short else 'MA 동일'}"
+                        )
+
+                        sample    = closed[-11:-1] if len(closed) >= 12 else closed[:-1]
+                        avg_vol   = sum(c.volume for c in sample) / len(sample) if sample else 0
+                        threshold = avg_vol * ag.SIGNAL_VOL_RATIO
+                        vol_ok    = last.volume >= threshold
+                        vol_sym   = "✅" if vol_ok else "❌"
+                        lines.append(
+                            f"거래량: {last.volume:,} vs 평균{avg_vol:,.0f}×{ag.SIGNAL_VOL_RATIO} "
+                            f"= {threshold:,.0f} {vol_sym}"
+                        )
+
+                        if len(closed) >= ag.SIGNAL_CONSEC:
+                            recent = closed[-ag.SIGNAL_CONSEC:]
+                            consec_strs = [
+                                f"{'▲양봉' if c.is_bullish else '▼음봉'}[{c.datetime.strftime('%H:%M')}] "
+                                f"O={c.open:,} C={c.close:,} V={c.volume:,}"
+                                for c in recent
+                            ]
+                            all_bull = all(c.is_bullish for c in recent)
+                            all_bear = all(c.close < c.open for c in recent)
+                            lines.append("최근 2봉:")
+                            for s in consec_strs:
+                                lines.append(f"  {s}")
+
+                            long_conds = [
+                                ("MA 위(롱)", ma_ok_long),
+                                ("연속양봉",  all_bull),
+                                ("거래량",    vol_ok),
+                            ]
+                            long_ok  = all(v for _, v in long_conds)
+                            lines.append(
+                                "🟢 롱조건: " +
+                                " | ".join(f"{'✅' if v else '❌'}{n}" for n, v in long_conds) +
+                                f" → {'✅ 충족' if long_ok else '❌ 미충족'}"
+                            )
+                            short_conds = [
+                                ("MA 아래(숏)", ma_ok_short),
+                                ("연속음봉",    all_bear),
+                                ("거래량",      vol_ok),
+                            ]
+                            short_ok  = all(v for _, v in short_conds)
+                            lines.append(
+                                "🔴 숏조건: " +
+                                " | ".join(f"{'✅' if v else '❌'}{n}" for n, v in short_conds) +
+                                f" → {'✅ 충족' if short_ok else '❌ 미충족'}"
+                            )
+                        else:
+                            lines.append("최근 2봉: 데이터 부족")
+                    else:
+                        lines.append(f"캔들 부족 ({len(closed)}/{ag.SIGNAL_MA_PERIOD}봉) — 분석 불가")
+
+                # ── 종합 신호 (전략 공통) ─────────────────────────────
+                signal  = ag._calc_signal(candles)
+                now_hm  = datetime.now().strftime("%H:%M")
+                in_time = config.LEVERAGE_ENTRY_START <= now_hm <= config.LEVERAGE_ENTRY_END
+                if signal == "LEVERAGE":
+                    sig_str = "🟢 레버리지(롱) 진입 가능"
+                elif signal == "INVERSE":
+                    sig_str = "🔴 인버스(숏) 진입 가능"
+                else:
+                    sig_str = "⚪ 신호 없음"
+                time_str = "" if in_time else f" (진입시간 외: {now_hm})"
+                lines.append(f"→ <b>신호: {sig_str}{time_str}</b>")
             except Exception as e:
                 lines.append(f"⚠️ 신호 분석 실패: {e}")
 

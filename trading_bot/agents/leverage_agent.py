@@ -107,10 +107,18 @@ class LeverageInverseAgent(BaseAgent):
             self._enter(direction, context)
 
     # ─────────────────────────────────────────
-    # 신호 계산
+    # 신호 계산 (전략 디스패처)
     # ─────────────────────────────────────────
 
     def _calc_signal(self, candles: list) -> Optional[str]:
+        strategy = getattr(config, "LEVERAGE_STRATEGY", "BASIC")
+        if strategy == "MACD_HA":
+            return self._calc_signal_macd_ha(candles)
+        return self._calc_signal_basic(candles)
+
+    # ── 기본 전략: 연속봉 + 5MA + 거래량 ───────────────────────────
+
+    def _calc_signal_basic(self, candles: list) -> Optional[str]:
         closed = [c for c in candles if c.is_closed]
         ma = self._calc_ma(closed, self.SIGNAL_MA_PERIOD)
         if not ma or len(closed) < self.SIGNAL_CONSEC:
@@ -122,13 +130,79 @@ class LeverageInverseAgent(BaseAgent):
 
         recent   = closed[-self.SIGNAL_CONSEC:]
         all_bull = all(c.is_bullish for c in recent)
-        all_bear = all(c.close < c.open for c in recent)  # 순수 음봉(doji 제외)
+        all_bear = all(c.close < c.open for c in recent)
 
         if last.close > ma and all_bull and vol_ok:
             return "LEVERAGE"
         if last.close < ma and all_bear and vol_ok:
             return "INVERSE"
         return None
+
+    # ── MACD + 하이킨아시 전략 ──────────────────────────────────────
+
+    def _calc_signal_macd_ha(self, candles: list) -> Optional[str]:
+        closed = [c for c in candles if c.is_closed]
+        fast   = getattr(config, "LEVERAGE_MACD_FAST",   12)
+        slow   = getattr(config, "LEVERAGE_MACD_SLOW",   26)
+        sig    = getattr(config, "LEVERAGE_MACD_SIGNAL",  9)
+        if len(closed) < slow + sig - 1:
+            return None
+
+        ha      = self._calc_heikin_ashi(closed)
+        last_ha = ha[-1]
+        ha_bull = last_ha["close"] > last_ha["open"]
+        ha_bear = last_ha["close"] < last_ha["open"]
+
+        macd_val, signal_val = self._calc_macd_values(
+            [c.close for c in closed], fast, slow, sig
+        )
+        if macd_val is None:
+            return None
+
+        if macd_val > signal_val and ha_bull:
+            return "LEVERAGE"
+        if macd_val < signal_val and ha_bear:
+            return "INVERSE"
+        return None
+
+    # ── HA / MACD 계산 헬퍼 ─────────────────────────────────────────
+
+    def _calc_heikin_ashi(self, candles: list) -> list:
+        """확정봉 리스트 → HA 딕셔너리 리스트 {open, high, low, close}"""
+        ha = []
+        for i, c in enumerate(candles):
+            ha_close = (c.open + c.high + c.low + c.close) / 4
+            ha_open  = (c.open + c.close) / 2 if i == 0 else (ha[i-1]["open"] + ha[i-1]["close"]) / 2
+            ha.append({
+                "open":  ha_open,
+                "high":  max(c.high, ha_open, ha_close),
+                "low":   min(c.low,  ha_open, ha_close),
+                "close": ha_close,
+            })
+        return ha
+
+    def _calc_ema(self, values: list, period: int) -> list:
+        """지수이동평균(EMA). 데이터 부족 시 []"""
+        if len(values) < period:
+            return []
+        k   = 2 / (period + 1)
+        ema = [sum(values[:period]) / period]
+        for v in values[period:]:
+            ema.append(v * k + ema[-1] * (1 - k))
+        return ema
+
+    def _calc_macd_values(self, closes: list, fast: int, slow: int, signal_period: int):
+        """(macd_최신값, signal_최신값) 또는 데이터 부족 시 (None, None)"""
+        ema_fast = self._calc_ema(closes, fast)
+        ema_slow = self._calc_ema(closes, slow)
+        if not ema_fast or not ema_slow:
+            return None, None
+        diff          = len(ema_fast) - len(ema_slow)
+        macd_series   = [f - s for f, s in zip(ema_fast[diff:], ema_slow)]
+        signal_series = self._calc_ema(macd_series, signal_period)
+        if not signal_series:
+            return None, None
+        return macd_series[-1], signal_series[-1]
 
     def _calc_ma(self, candles: list, period: int) -> Optional[float]:
         closed = [c for c in candles if c.is_closed]
