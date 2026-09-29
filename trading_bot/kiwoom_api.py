@@ -193,7 +193,7 @@ class KiwoomAPI:
     # ─────────────────────────────────────────
     def _post(self, path: str, body: dict, api_id: str,
               cont_yn: str = "N", next_key: str = "",
-              max_retries: int = 3) -> dict:
+              max_retries: int = 3, return_headers: bool = False):
         self._ensure_token()
 
         # ── 일일 요청 횟수 추적 ──────────────────────
@@ -262,12 +262,17 @@ class KiwoomAPI:
                 )
                 resp.raise_for_status()
 
-            return resp.json()
+            data = resp.json()
+            if return_headers:
+                resp_cont_yn  = resp.headers.get("cont-yn")  or data.get("cont_yn",  "N")
+                resp_next_key = resp.headers.get("next-key") or data.get("next_key", "")
+                return data, resp_cont_yn, resp_next_key
+            return data
 
         # max_retries회 모두 실패
         logger.error(f"[KiwoomAPI] {api_id} {max(1, max_retries)}회 재시도 후 최종 실패")
         resp.raise_for_status()
-        return {}
+        return ({}, "N", "") if return_headers else {}
 
     # ─────────────────────────────────────────
     # WebSocket 이벤트 루프 스레드
@@ -375,6 +380,17 @@ class KiwoomAPI:
     # ─────────────────────────────────────────
     # WebSocket 메시지 디스패처
     # ─────────────────────────────────────────
+    @staticmethod
+    def _resolve_future(fut, msg):
+        """Future 해제를 이벤트루프 스레드에서 수행하며 완료 여부를 다시 확인한다.
+
+        수신 스레드에서 not done()을 확인해도 call_soon_threadsafe 예약과 실제 실행 사이에
+        대기측 타임아웃이 Future를 완료시킬 수 있어, 그대로 set_result하면
+        InvalidStateError가 난다 (2026-09-23 조건검색 응답 지연 시 실제 발생).
+        """
+        if not fut.done():
+            fut.set_result(msg)
+
     def _dispatch_ws_message(self, msg: dict):
         """
         trnm 필드로 분기:
@@ -398,13 +414,13 @@ class KiwoomAPI:
         elif trnm == "CNSRLST":
             fut = self._cnsrlst_future
             if fut is not None and not fut.done():
-                self._ws_loop.call_soon_threadsafe(fut.set_result, msg)
+                self._ws_loop.call_soon_threadsafe(self._resolve_future, fut, msg)
 
         elif trnm == "CNSRREQ":
             fut = self._cnsrreq_future
             if fut is not None and not fut.done():
                 # 일회성 조회 응답
-                self._ws_loop.call_soon_threadsafe(fut.set_result, msg)
+                self._ws_loop.call_soon_threadsafe(self._resolve_future, fut, msg)
             else:
                 # 실시간 편입 이벤트
                 self._handle_condition_realtime(msg, action="IN")
@@ -606,37 +622,56 @@ class KiwoomAPI:
     # ─────────────────────────────────────────
     def get_minute_data(self, code: str,
                         tick_range: int = 3,
-                        count: int = 100) -> Optional[pd.DataFrame]:
-        """ka10080 - 주식 분봉차트"""
-        # ── 차트 API 전용 스로틀 (ka10080 rate limit 보호, 최소 1.1초/call) ──
-        _now = time.time()
-        _wait = self._chart_min_interval - (_now - self._last_chart_call)
-        if _wait > 0:
-            time.sleep(_wait)
-        self._last_chart_call = time.time()
+                        count: int = 100,
+                        paginate: bool = False,
+                        max_pages: int = 10) -> Optional[pd.DataFrame]:
+        """ka10080 - 주식 분봉차트
+        paginate=True: 응답 cont-yn/next-key로 과거 페이지를 이어받아
+        더 긴 이력을 확보 (최대 max_pages 페이지, 백테스트용). 기본값(False)은
+        기존과 동일하게 단일 호출 + count 절단 동작을 유지한다.
+        """
+        all_rows = []
+        cont_yn, next_key = "N", ""
+        page = 0
 
-        try:
-            data = self._post(
-                "/api/dostk/chart",
-                body={
-                    "stk_cd":       code,
-                    "tic_scope":    str(tick_range),
-                    "upd_stkpc_tp": "1",
-                },
-                api_id="ka10080",
-            )
+        while True:
+            # ── 차트 API 전용 스로틀 (ka10080 rate limit 보호, 최소 1.1초/call) ──
+            _now = time.time()
+            _wait = self._chart_min_interval - (_now - self._last_chart_call)
+            if _wait > 0:
+                time.sleep(_wait)
+            self._last_chart_call = time.time()
+
+            try:
+                data, resp_cont_yn, resp_next_key = self._post(
+                    "/api/dostk/chart",
+                    body={
+                        "stk_cd":       code,
+                        "tic_scope":    str(tick_range),
+                        "upd_stkpc_tp": "1",
+                    },
+                    api_id="ka10080",
+                    cont_yn=cont_yn,
+                    next_key=next_key,
+                    return_headers=True,
+                )
+            except Exception as e:
+                logger.warning(f"[KiwoomAPI] {code} 분봉 실패: {e}")
+                break
+
             items = data.get("stk_min_pole_chart_qry", [])
             if not items:
-                return None
+                break
 
-            # 진단: 최신 봉(items[0])의 원본 필드 항상 출력 (volume 필드명 확인용)
-            logger.info(f"[KiwoomAPI] {code} ka10080 최신봉raw(count={count}): {items[0]}")
+            if page == 0:
+                # 진단: 최신 봉(items[0])의 원본 필드 항상 출력 (volume 필드명 확인용)
+                logger.info(f"[KiwoomAPI] {code} ka10080 최신봉raw(count={count}): {items[0]}")
 
-            rows = []
-            for item in items[:count]:
+            take = items if paginate else items[:count]
+            for item in take:
                 def _int(v):
                     return abs(int(str(v).replace(",", "").lstrip("+-") or "0"))
-                rows.append({
+                all_rows.append({
                     "datetime": item.get("cntr_tm", ""),
                     "open":     _int(item.get("open_pric", 0)),
                     "high":     _int(item.get("high_pric", 0)),
@@ -645,12 +680,16 @@ class KiwoomAPI:
                     "volume":   _int(item.get("trde_qty",  0)),
                 })
 
-            df = pd.DataFrame(rows)
-            return df.iloc[::-1].reset_index(drop=True)
+            page += 1
+            if not paginate or resp_cont_yn != "Y" or not resp_next_key or page >= max_pages:
+                break
+            cont_yn, next_key = resp_cont_yn, resp_next_key
 
-        except Exception as e:
-            logger.warning(f"[KiwoomAPI] {code} 분봉 실패: {e}")
+        if not all_rows:
             return None
+
+        df = pd.DataFrame(all_rows)
+        return df.iloc[::-1].reset_index(drop=True)
 
     # ─────────────────────────────────────────
     # 조건식 기반 종목 검색 - WebSocket

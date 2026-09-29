@@ -50,6 +50,14 @@ def _update_env_value(key: str, value: str) -> None:
         logger.warning(f"[Env] .env 저장 실패 ({key}): {e}")
 
 
+LEVERAGE_STRATEGY_NAMES = {
+    "BOLLINGER": "일봉추세+볼린저밴드돌파",
+    "TREND_MACD": "일봉추세+MACD크로스",
+    "MACD_HA": "MACD+하이킨아시",
+    "BASIC": "연속봉+5MA+거래량",
+}
+
+
 class TradingBot:
     """
     메인 트레이딩 봇 (하네스 기반 에이전트 아키텍처)
@@ -138,8 +146,10 @@ class TradingBot:
         logger.info("[Bot] 하네스 기반 트레이딩 봇 시작")
         logger.info(f"[Bot] 모드: {'모의투자' if config.IS_SIMULATION else '실계좌'}")
 
-        # 텔레그램 알림 핸들러 + 폴링 시작
-        logging.getLogger().addHandler(TelegramLogHandler(self.notifier))
+        # 텔레그램 알림 핸들러 + 폴링 시작 (start() 재호출 시 중복 등록 방지)
+        _root = logging.getLogger()
+        if not any(isinstance(h, TelegramLogHandler) for h in _root.handlers):
+            _root.addHandler(TelegramLogHandler(self.notifier))
         self.notifier.start_polling()
         mode_str = "모의투자" if config.IS_SIMULATION else "실계좌"
         self.notifier.send(
@@ -242,10 +252,14 @@ class TradingBot:
         lev     = config.LEVERAGE_ETF_CODE
         inv     = config.INVERSE_ETF_CODE
 
-        # 삼성전자: 3분봉 캔들 빌더 + 실시간 구독
+        # 삼성전자: 신호용 분봉 캔들 빌더 + 실시간 구독 (주기: LEVERAGE_CANDLE_INTERVAL)
+        # api_feed=True: 봉은 ka10080 공식 분봉만 사용 (틱 집계 안 함)
+        lev_interval = getattr(config, "LEVERAGE_CANDLE_INTERVAL", 10)
         self.market_data_skill.init_stock(
             samsung,
-            on_candle_close=lambda c, _s=samsung: self.harness.broadcast_event("CANDLE", c)
+            on_candle_close=lambda c, _s=samsung: self.harness.broadcast_event("CANDLE", c),
+            interval_min=lev_interval,
+            api_feed=True,
         )
         self.kiwoom.subscribe_realtime(samsung)
 
@@ -256,7 +270,7 @@ class TradingBot:
 
         self.leverage_agent.reset_daily()
         logger.info(
-            f"[Bot] 레버리지 전략 초기화: 삼성({samsung}) "
+            f"[Bot] 레버리지 전략 초기화: 삼성({samsung}, {lev_interval}분봉) "
             f"레버리지({lev}) 인버스({inv})"
         )
 
@@ -817,6 +831,12 @@ class TradingBot:
                         self._clear_all_positions(reason="시간외청산")
                         self._cleared_today = True
 
+                # 레버리지 전략 EOD 강제청산 — 삼성전자 틱/캔들 이벤트에 의존하지 않는
+                # 독립 타이머 체크 (API 일일 한도 초과 등으로 신호분봉 갱신이 끊겨도
+                # 당일 청산이 누락되지 않도록 매 루프마다 시각만으로 트리거)
+                if hasattr(self, "leverage_agent") and getattr(self.leverage_agent, "_position", None):
+                    self.leverage_agent._check_force_exit(self.harness.get_context())
+
                 # 장 종료 처리
                 if now_hm >= config.TRADE_END_TIME:
                     self._on_market_close()
@@ -889,25 +909,32 @@ class TradingBot:
 
                     # 삼성전자 갱신은 아래 독립 블록에서 처리
 
-                # ── 삼성전자 3분봉: ka10080 갱신 (시뮬, 레버리지 전략 독립 블록) ──
-                # _candidates 유무와 무관하게 항상 실행
-                if (config.IS_SIMULATION and self._in_trade_hours()
-                        and hasattr(self, "leverage_agent")):
+                # ── 삼성전자 신호 분봉: ka10080 갱신 (실전/시뮬 공용, 레버리지 전략 독립 블록) ──
+                # 봉은 API 공식 분봉만 사용 (api_feed=True 빌더). 새 봉이 기대되는 시점에만 폴링.
+                if self._in_trade_hours() and hasattr(self, "leverage_agent"):
                     last_refresh = self._last_sim_poll.get("005930", 0.0)
-                    if now_ts - last_refresh >= 180:
+                    if now_ts - last_refresh >= 30:  # 최소 30초 간격
                         market_data = self.harness.skills.get("market_data")
                         if market_data:
-                            n = market_data.refresh_candles("005930", count=5)
-                            if n >= 0:
+                            lev_min = getattr(config, "LEVERAGE_CANDLE_INTERVAL", 10)
+                            candles = market_data.get_candles("005930")
+                            # 봉 datetime은 시작 시각 → 다음 봉 완성 = 시작 + 2×주기 (+10초 여유)
+                            due = (
+                                not candles or
+                                (datetime.now() - candles[-1].datetime).total_seconds()
+                                >= lev_min * 120 + 10
+                            )
+                            if due:
+                                n = market_data.refresh_candles("005930", count=5)
                                 self._last_sim_poll["005930"] = now_ts
-                                logger.info(
-                                    f"[Sim] 삼성전자 3분봉 갱신: {n}개 주입 (ka10080)"
-                                )
-                            else:
-                                self._last_sim_poll["005930"] = now_ts - 180 + 30
-                                logger.warning(
-                                    "[Sim] 삼성전자 분봉 갱신 실패 → 30초 후 재시도"
-                                )
+                                if n > 0:
+                                    logger.info(
+                                        f"[MarketData] 삼성전자 {lev_min}분봉 갱신: {n}개 주입 (ka10080)"
+                                    )
+                                elif n < 0:
+                                    logger.warning(
+                                        "[MarketData] 삼성전자 분봉 갱신 실패 → 30초 후 재시도"
+                                    )
 
                 # 수동 강제청산 확인
                 import os
@@ -1034,16 +1061,21 @@ class TradingBot:
         )
 
         # 텔레그램 일일 요약 전송
-        pnl = summary.get("total_pnl", 0)
-        pnl_emoji = "📈" if pnl >= 0 else "📉"
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        pnl          = summary.get("total_pnl", 0)
+        pnl_rate     = summary.get("pnl_rate", 0)
+        total_amount = summary.get("total_amount", 0)
+        pnl_emoji    = "📈" if pnl >= 0 else "📉"
+        today_str    = datetime.now().strftime("%Y-%m-%d")
+
+        # 거래금액 대비 수익률 표기 (거래 없으면 생략)
+        pnl_rate_str = f" ({pnl_rate:+.2%})" if total_amount > 0 else ""
 
         msg_lines = [
             f"{pnl_emoji} <b>오늘 장 마감 요약 [{today_str}]</b>",
             f"거래 횟수: {summary.get('total', 0)}회",
             f"승: {summary.get('wins', 0)}회 / 패: {summary.get('loses', 0)}회 "
             f"(승률: {summary.get('win_rate', 0):.1%})",
-            f"실현 손익: {pnl:+,.0f}원",
+            f"실현 손익: {pnl:+,.0f}원{pnl_rate_str}  <i>(거래세 차감 후)</i>",
         ]
 
         # 오버나잇 유지 VM 포지션
@@ -1141,7 +1173,9 @@ class TradingBot:
             now_str = datetime.now().strftime("%H:%M:%S")
 
             if not vm_positions and not gen_positions:
-                return f"📂 보유 포지션 없음 [{now_str}]"
+                lev_pos_chk = getattr(self.leverage_agent, "_position", None)
+                if not lev_pos_chk:
+                    return f"📂 보유 포지션 없음 [{now_str}]"
 
             def _get_price(code, fallback):
                 """실시간 틱 없으면 REST로 현재가 조회"""
@@ -1156,19 +1190,33 @@ class TradingBot:
                     return price, flu
                 return price, None
 
+            FEE_RATE = 0.00015  # 매수/매도 각각 0.015%
+
+            def _net_pnl(entry_price, cur_price, qty, is_etf=False):
+                """수수료·세금 반영 순손익 (매도 기준 추정)"""
+                tax_rate = 0.0 if is_etf else 0.002  # ETF 세금없음, 주식 0.2%
+                buy_fee  = entry_price * qty * FEE_RATE
+                sell_fee = cur_price   * qty * FEE_RATE
+                tax      = cur_price   * qty * tax_rate
+                gross    = (cur_price - entry_price) * qty
+                net      = gross - buy_fee - sell_fee - tax
+                invest   = entry_price * qty + buy_fee
+                rate     = net / invest if invest else 0.0
+                return net, rate
+
             lines = [f"📂 <b>보유 포지션 [{now_str}]</b>"]
             total_unreal = 0
 
             # ── VM 포지션 ──────────────────────────────────────────────
             if vm_positions:
                 lines.append(f"\n🤖 <b>VM 포지션 ({len(vm_positions)}개)</b>")
+                vm_unreal = 0
                 for pid, pos in vm_positions.items():
                     cur, flu = _get_price(pos.code, pos.entry_price)
                     if not cur:
                         cur = pos.entry_price
-                    pnl_pos  = pos.pnl(cur)
-                    rate_pos = pos.pnl_rate(cur)
-                    total_unreal += pnl_pos
+                    pnl_pos, rate_pos = _net_pnl(pos.entry_price, cur, pos.qty, is_etf=False)
+                    vm_unreal += pnl_pos
                     emoji = "▲" if pnl_pos >= 0 else "▼"
 
                     # 홀딩 진행도
@@ -1184,11 +1232,12 @@ class TradingBot:
                     lines.append(
                         f"\n  {emoji} <b>{pos.name} ({pos.code})</b>{hold_str}\n"
                         f"    진입: {pos.entry_price:,}원 | 현재: {cur:,}원{flu_str}\n"
-                        f"    평가손익: {pnl_pos:+,.0f}원 ({rate_pos:+.2%})\n"
+                        f"    순손익(수수료+세금): {pnl_pos:+,.0f}원 ({rate_pos:+.2%})\n"
                         f"    수량: {pos.qty}주 | 평가금액: {int(cur * pos.qty):,}원\n"
                         f"    SL: {pos.stop_loss:,}원 | TP: {pos.take_profit:,}원"
                     )
-                lines.append(f"\n  └ VM 미실현 합계: {total_unreal:+,.0f}원")
+                lines.append(f"\n  └ VM 순손익 합계: {vm_unreal:+,.0f}원")
+                total_unreal += vm_unreal
 
             # ── 일반 포지션 ────────────────────────────────────────────
             if gen_positions:
@@ -1198,18 +1247,17 @@ class TradingBot:
                     cur, flu = _get_price(code, pos.entry_price)
                     if not cur:
                         cur = pos.entry_price
-                    pnl_pos  = pos.pnl(cur)
-                    rate_pos = pos.pnl_rate(cur)
+                    pnl_pos, rate_pos = _net_pnl(pos.entry_price, cur, pos.qty, is_etf=False)
                     gen_unreal += pnl_pos
                     emoji = "▲" if pnl_pos >= 0 else "▼"
                     flu_str = f" {flu:+.2f}%" if flu is not None else ""
                     lines.append(
                         f"\n  {emoji} <b>{pos.name} ({code})</b>\n"
                         f"    진입: {pos.entry_price:,}원 | 현재: {cur:,}원{flu_str}\n"
-                        f"    평가손익: {pnl_pos:+,.0f}원 ({rate_pos:+.2%})\n"
+                        f"    순손익(수수료+세금): {pnl_pos:+,.0f}원 ({rate_pos:+.2%})\n"
                         f"    수량: {pos.qty}주 | 평가금액: {int(cur * pos.qty):,}원"
                     )
-                lines.append(f"\n  └ 일반 미실현 합계: {gen_unreal:+,.0f}원")
+                lines.append(f"\n  └ 일반 순손익 합계: {gen_unreal:+,.0f}원")
                 total_unreal += gen_unreal
 
             # ── 삼성전자 롱숏 전략 포지션 ─────────────────────────────
@@ -1219,8 +1267,9 @@ class TradingBot:
                 cur_lev, flu_lev = _get_price(etf_code, lev_pos["entry_price"])
                 if not cur_lev:
                     cur_lev = lev_pos["entry_price"]
-                pnl_lev  = (cur_lev - lev_pos["entry_price"]) * lev_pos["qty"]
-                rate_lev = (cur_lev - lev_pos["entry_price"]) / lev_pos["entry_price"] if lev_pos["entry_price"] else 0
+                pnl_lev, rate_lev = _net_pnl(
+                    lev_pos["entry_price"], cur_lev, lev_pos["qty"], is_etf=True
+                )
                 total_unreal += pnl_lev
                 emoji = "▲" if pnl_lev >= 0 else "▼"
                 dir_label = "레버리지(롱)" if lev_pos["direction"] == "LEVERAGE" else "인버스(숏)"
@@ -1229,11 +1278,11 @@ class TradingBot:
                     f"\n⚡ <b>삼성전자 롱숏 전략</b>\n"
                     f"  {emoji} <b>{lev_pos['name']} ({etf_code})</b> [{dir_label}]\n"
                     f"    진입: {lev_pos['entry_price']:,}원 | 현재: {cur_lev:,}원{flu_str}\n"
-                    f"    평가손익: {pnl_lev:+,.0f}원 ({rate_lev:+.2%})\n"
+                    f"    순손익(수수료): {pnl_lev:+,.0f}원 ({rate_lev:+.2%})\n"
                     f"    수량: {lev_pos['qty']}주 | SL: {lev_pos['stop_loss']:,}원 | TP: {lev_pos['take_profit']:,}원"
                 )
 
-            lines.append(f"\n💰 <b>미실현 손익 총합: {total_unreal:+,.0f}원</b>")
+            lines.append(f"\n💰 <b>순손익 총합(수수료·세금 반영): {total_unreal:+,.0f}원</b>")
             return "\n".join(lines)
 
         def cmd_picks(_args):
@@ -1444,7 +1493,7 @@ class TradingBot:
                     f"[3] ⚡ 삼성전자 롱숏전략     {_flag(lev_on)}",
                     f"    매수금액: {lev_amt:,}원/회",
                     f"    전략: {getattr(config,'LEVERAGE_STRATEGY','BASIC')} "
-                    f"({'MACD+하이킨아시' if getattr(config,'LEVERAGE_STRATEGY','BASIC')=='MACD_HA' else '연속봉+5MA+거래량'})",
+                    f"({LEVERAGE_STRATEGY_NAMES.get(getattr(config,'LEVERAGE_STRATEGY','BASIC'), '연속봉+5MA+거래량')})",
                     f"    SL: {config.LEVERAGE_SL_RATE:.1%} | TP: {config.LEVERAGE_TP_RATE:.1%} "
                     f"| 강제청산: {config.LEVERAGE_FORCE_EXIT}",
                     "━━━━━━━━━━━━━━━━━━━━━━",
@@ -1528,13 +1577,13 @@ class TradingBot:
                         return "❓ 사용법: /strategy lev amount 500000"
                 if cmd2 == "strategy" and len(parts) >= 3:
                     chosen = parts[2].upper()
-                    if chosen in ("BASIC", "MACD_HA"):
+                    if chosen in ("BASIC", "MACD_HA", "TREND_MACD", "BOLLINGER"):
                         config.LEVERAGE_STRATEGY = chosen
                         _update_env_value("LEVERAGE_STRATEGY", chosen)
-                        label = "연속봉+5MA+거래량" if chosen == "BASIC" else "MACD+하이킨아시"
+                        label = LEVERAGE_STRATEGY_NAMES.get(chosen, chosen)
                         return f"✅ 레버리지 전략 → {chosen} ({label}) (.env 저장)"
-                    return "❓ 사용법: /strategy lev strategy basic|macd_ha"
-                return "❓ 사용법: /strategy lev on|off|amount <금액>|strategy basic|macd_ha"
+                    return "❓ 사용법: /strategy lev strategy basic|macd_ha|trend_macd|bollinger"
+                return "❓ 사용법: /strategy lev on|off|amount <금액>|strategy basic|macd_ha|trend_macd|bollinger"
 
             # ── 조건식 변경 ────────────────────────────────────────────────
             if sub == "condition" and len(parts) >= 2:
@@ -1703,10 +1752,19 @@ class TradingBot:
 
             # ── 삼성전자 신호 분석 ─────────────────────────────────────
             lev_strategy = getattr(config, "LEVERAGE_STRATEGY", "BASIC")
-            strat_label  = "MACD+하이킨아시" if lev_strategy == "MACD_HA" else "연속봉+5MA+거래량"
+            strat_label  = LEVERAGE_STRATEGY_NAMES.get(lev_strategy, "연속봉+5MA+거래량")
             lines.append(f"\n📊 <b>삼성전자 신호 분석</b> [전략: {strat_label}]")
             try:
                 market_data = self.harness.skills.get("market_data")
+                # 장전 등 전략 초기화 전이면 온디맨드로 빌더 생성 (ka10080 전일봉 포함 150개)
+                if market_data and not market_data.get_builder(ag.SAMSUNG_CODE) and self._kiwoom_ready:
+                    lev_interval = getattr(config, "LEVERAGE_CANDLE_INTERVAL", 10)
+                    market_data.init_stock(
+                        ag.SAMSUNG_CODE,
+                        on_candle_close=lambda c: self.harness.broadcast_event("CANDLE", c),
+                        interval_min=lev_interval,
+                        api_feed=True,
+                    )
                 candles = market_data.get_candles(ag.SAMSUNG_CODE) if market_data else []
                 closed  = [c for c in candles if c.is_closed]
 
@@ -1743,14 +1801,14 @@ class TradingBot:
                             [c.close for c in closed], fast, slow, sig
                         )
                         if macd_val is not None:
-                            macd_sym = "▲ MACD>Signal ✅" if macd_val > signal_val else "▼ MACD<Signal ❌"
+                            macd_sym = "▲ MACD&gt;Signal ✅" if macd_val > signal_val else "▼ MACD&lt;Signal ❌"
                             lines.append(
                                 f"MACD({fast}/{slow}/{sig}): {macd_val:+.2f} | "
                                 f"Signal: {signal_val:+.2f} → {macd_sym}"
                             )
                             # 롱/숏 조건
-                            long_conds  = [("MACD>Signal", macd_val > signal_val), ("HA양봉", ha_bull)]
-                            short_conds = [("MACD<Signal", macd_val < signal_val), ("HA음봉", ha_bear)]
+                            long_conds  = [("MACD&gt;Signal", macd_val > signal_val), ("HA양봉", ha_bull)]
+                            short_conds = [("MACD&lt;Signal", macd_val < signal_val), ("HA음봉", ha_bear)]
                             long_ok  = all(v for _, v in long_conds)
                             short_ok = all(v for _, v in short_conds)
                             lines.append(
@@ -1763,6 +1821,54 @@ class TradingBot:
                                 " | ".join(f"{'✅' if v else '❌'}{n}" for n, v in short_conds) +
                                 f" → {'✅ 충족' if short_ok else '❌ 미충족'}"
                             )
+
+                elif lev_strategy in ("BOLLINGER", "TREND_MACD"):
+                    # ── 일봉추세 + 볼린저밴드돌파/MACD크로스 디스플레이 ──
+                    fast_ma = getattr(config, "LEVERAGE_TREND_FAST_MA", 10)
+                    slow_ma = getattr(config, "LEVERAGE_TREND_SLOW_MA", 20)
+                    trend = ag._get_daily_trend(self.harness) if self._kiwoom_ready else None
+                    trend_sym = "▲상승(롱만)" if trend == "UP" else ("▼하락(숏만)" if trend == "DOWN" else "❓판단불가")
+                    lines.append(f"일봉추세({fast_ma}일/{slow_ma}일선): {trend_sym}")
+
+                    if lev_strategy == "BOLLINGER":
+                        period = getattr(config, "LEVERAGE_BB_PERIOD", 27)
+                        mult   = getattr(config, "LEVERAGE_BB_MULT", 1.1)
+                        min_c  = period + 1
+                        if len(closed) < min_c:
+                            lines.append(f"캔들 부족 ({len(closed)}/{min_c}봉) — 볼린저밴드 분석 불가")
+                        else:
+                            last = closed[-1]
+                            closes = [c.close for c in closed]
+                            mid, upper, lower = ag._calc_bollinger_values(closes, period, mult)
+                            lines.append(
+                                f"최신봉[{last.datetime.strftime('%H:%M')}] 종가: {last.close:,}원"
+                            )
+                            lines.append(
+                                f"볼린저({period}/{mult}): 중심{mid:,.0f} 상단{upper:,.0f} 하단{lower:,.0f}"
+                            )
+                            long_ok  = trend == "UP" and last.close > upper
+                            short_ok = trend == "DOWN" and last.close < lower
+                            lines.append(f"🟢 롱조건(상승추세+상단돌파): {'✅ 충족' if long_ok else '❌ 미충족'}")
+                            lines.append(f"🔴 숏조건(하락추세+하단돌파): {'✅ 충족' if short_ok else '❌ 미충족'}")
+                    else:
+                        fast = getattr(config, "LEVERAGE_MACD_FAST",   5)
+                        slow = getattr(config, "LEVERAGE_MACD_SLOW",   13)
+                        sig  = getattr(config, "LEVERAGE_MACD_SIGNAL", 6)
+                        min_c = slow + sig
+                        if len(closed) < min_c:
+                            lines.append(f"캔들 부족 ({len(closed)}/{min_c}봉) — MACD 분석 불가")
+                        else:
+                            last = closed[-1]
+                            macd_val, signal_val = ag._calc_macd_values(
+                                [c.close for c in closed], fast, slow, sig
+                            )
+                            lines.append(f"최신봉[{last.datetime.strftime('%H:%M')}] 종가: {last.close:,}원")
+                            if macd_val is not None:
+                                macd_sym = "▲ MACD&gt;Signal" if macd_val > signal_val else "▼ MACD&lt;Signal"
+                                lines.append(
+                                    f"MACD({fast}/{slow}/{sig}): {macd_val:+.2f} | "
+                                    f"Signal: {signal_val:+.2f} → {macd_sym}"
+                                )
 
                 else:
                     # ── 기본전략 디스플레이 (연속봉 + 5MA + 거래량) ──────

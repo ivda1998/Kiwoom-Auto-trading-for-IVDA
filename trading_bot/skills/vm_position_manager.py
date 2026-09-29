@@ -129,7 +129,39 @@ class VMPositionManager(BaseSkill):
             except Exception as e:
                 logger.error(f"[VMManager] 포지션 로드 실패: {e}")
 
+        self._reconcile_with_account()
         self.load_pending()
+
+    def _reconcile_with_account(self):
+        """
+        복구된 포지션을 실제 계좌 보유 수량과 대조.
+        모의계좌 재발급 등으로 계좌가 초기화되면 JSON에만 남은 유령 포지션이
+        생기는데, 이를 방치하면 존재하지 않는 수량을 계속 매도 시도해
+        '매도가능수량 부족' 에러가 반복 발생한다.
+        """
+        if not self._positions:
+            return
+        try:
+            real = {p["code"]: p["qty"] for p in self.kiwoom.get_positions()}
+        except Exception as e:
+            logger.error(f"[VMManager] 계좌 대조 실패 — 기존 포지션 그대로 유지: {e}")
+            return
+
+        for pid, pos in list(self._positions.items()):
+            real_qty = real.get(pos.code, 0)
+            if real_qty <= 0:
+                logger.warning(
+                    f"[VMManager] 계좌 대조: {pos.name}({pos.code}) {pos.qty}주 → "
+                    f"실계좌 미보유 확인, 유령 포지션 제거"
+                )
+                del self._positions[pid]
+            elif real_qty < pos.qty:
+                logger.warning(
+                    f"[VMManager] 계좌 대조: {pos.name}({pos.code}) 수량 "
+                    f"{pos.qty}→{real_qty}주 조정"
+                )
+                pos.qty = real_qty
+        self.save()
 
     def save(self):
         """포지션 변경마다 즉시 JSON으로 저장"""
@@ -451,7 +483,32 @@ class VMPositionManager(BaseSkill):
             )
             return True
         logger.error(f"[VMManager] 매도 실패: {pos.name}({pos.code}) ret={ret}")
+        self._reconcile_single(position_id, pos)
         return False
+
+    def _reconcile_single(self, position_id: str, pos: "VMPosition"):
+        """
+        매도 실패 시 해당 종목만 실계좌와 대조. 실보유가 없으면 유령 포지션으로
+        간주해 제거 — 그대로 두면 다음 SL/TP 체크 주기마다 같은 실패가 반복된다.
+        """
+        try:
+            real_list = self.kiwoom.get_positions()
+        except Exception as e:
+            logger.debug(f"[VMManager] 매도 실패 후 계좌 대조 실패: {e}")
+            return
+        real_qty = next((p["qty"] for p in real_list if p["code"] == pos.code), 0)
+        if real_qty <= 0:
+            logger.warning(
+                f"[VMManager] {pos.name}({pos.code}) 실계좌 미보유 확인 → 유령 포지션 제거"
+            )
+            self._positions.pop(position_id, None)
+            self.save()
+        elif real_qty < pos.qty:
+            logger.warning(
+                f"[VMManager] {pos.name}({pos.code}) 수량 {pos.qty}→{real_qty}주 조정"
+            )
+            pos.qty = real_qty
+            self.save()
 
     def sell_all_by_code(self, code: str, current_price: float, reason: str):
         """한 종목 코드의 모든 포지션 청산 (장마감·강제청산 시)."""

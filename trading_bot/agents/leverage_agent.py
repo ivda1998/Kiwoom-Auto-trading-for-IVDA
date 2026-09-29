@@ -13,10 +13,18 @@ class LeverageInverseAgent(BaseAgent):
     """
     삼성전자 방향성 모멘텀 기반 레버리지/인버스 ETF 당일 매매 전략.
 
-    신호원: 삼성전자(005930) 3분봉
-      - 현재가 > 5MA + 연속 2봉 양봉 + 거래량 1.5배 이상 → 0193W0 매수
-      - 현재가 < 5MA + 연속 2봉 음봉 + 거래량 1.5배 이상 → 0193L0 매수
-    청산: SL -1.5% / TP +3.0% (ETF 기준) / MA 역전 / 14:50 EOD 강제
+    신호원: 삼성전자(005930) 분봉 (주기: config.LEVERAGE_CANDLE_INTERVAL)
+
+    LEVERAGE_STRATEGY="BOLLINGER" (현재 기본, 2026-09-22 지표탐색 루프에서 발굴):
+      - 방향: 일봉 단기MA/장기MA 정배열 (LEVERAGE_TREND_FAST_MA/SLOW_MA)
+      - 진입: 그 방향으로 3분봉 볼린저밴드(LEVERAGE_BB_PERIOD/MULT) 상단/하단 돌파 시
+      - 청산: 봉 색깔/신호 무관 — 손절(SL_RATE)·트레일링(TRAIL_GAP, 틱 기준)·EOD 강제청산만
+    LEVERAGE_STRATEGY="TREND_MACD" (이전 기본):
+      - 방향: 일봉 단기MA/장기MA 정배열
+      - 진입: 그 방향으로 3분봉 MACD 골드/데드 크로스 발생 시
+      - 청산: BOLLINGER와 동일 (손절/트레일링/EOD만)
+    LEVERAGE_STRATEGY="MACD_HA" (레거시): HA 봉 색깔+MACD 레벨 AND 진입, HA 색 전환 청산
+    LEVERAGE_STRATEGY="BASIC" (레거시): 연속봉+5MA+거래량 진입, MA 역전 청산
     """
 
     LEVERAGE_CODE    = "0193W0"
@@ -29,6 +37,8 @@ class LeverageInverseAgent(BaseAgent):
 
     SL_RATE          = 0.015
     TP_RATE          = 0.030
+
+    REGULAR_CLOSE_HM = "1530"   # KRX 정규장 마감 — 이후는 애프터마켓
 
     ENTRY_START      = "09:00"
     ENTRY_END        = "15:00"
@@ -43,6 +53,8 @@ class LeverageInverseAgent(BaseAgent):
         self._last_etf_price: dict     = {}
         self._screen_counter           = 0
         self._force_exited_today       = False
+        self._last_exit_time: Optional[datetime] = None  # 재진입 쿨다운용
+        self._daily_trend_cache: dict  = {}  # {"date": "YYYY-MM-DD", "trend": "UP"/"DOWN"/None}
 
     # ─────────────────────────────────────────
     # 이벤트 디스패치
@@ -75,21 +87,55 @@ class LeverageInverseAgent(BaseAgent):
         market_data = harness.skills.get("market_data")
         candles     = market_data.get_candles(self.SAMSUNG_CODE)
         now_hm      = datetime.now().strftime("%H:%M")
+        entry_start = getattr(config, "LEVERAGE_ENTRY_START", self.ENTRY_START)
+        entry_end   = getattr(config, "LEVERAGE_ENTRY_END",   self.ENTRY_END)
 
         # 시뮬 모드에서는 Samsung TICK이 없으므로 캔들 도착 시에도 EOD 체크
         self._check_force_exit(context)
         if self._force_exited_today:
             return
 
-        # 포지션 보유 중: MA 역전 청산 체크
+        # 포지션 보유 중: 전략별 청산 체크
         if self._position:
-            ma = self._calc_ma(candles, self.SIGNAL_MA_PERIOD)
-            if ma:
-                direction = self._position["direction"]
-                if direction == "LEVERAGE" and candle.close < ma:
-                    self._exit("삼성MA하향(방향역전)", candle.close, context)
-                elif direction == "INVERSE" and candle.close > ma:
-                    self._exit("삼성MA상향(방향역전)", candle.close, context)
+            direction = self._position["direction"]
+            strategy  = getattr(config, "LEVERAGE_STRATEGY", "BASIC")
+            if strategy in ("TREND_MACD", "BOLLINGER"):
+                # 봉 색깔/신호 기반 청산 없음 — 손절/트레일링(틱)·EOD(시각)만으로 청산
+                return
+            elif strategy == "MACD_HA":
+                closed = [c for c in candles if c.is_closed]
+                if closed:
+                    ha      = self._calc_heikin_ashi(closed)
+                    last_ha = ha[-1]
+                    body    = abs(last_ha["close"] - last_ha["open"])
+                    rng     = last_ha["high"] - last_ha["low"]
+                    doji_th = getattr(config, "LEVERAGE_DOJI_TH", 0.2)
+                    is_doji = rng > 0 and body / rng < doji_th
+                    if not is_doji:
+                        ha_bear = last_ha["close"] < last_ha["open"]
+                        ha_bull = last_ha["close"] > last_ha["open"]
+                        flip_to = None
+                        if direction == "LEVERAGE" and ha_bear:
+                            self._exit("HA음봉전환(방향역전)", candle.close, context)
+                            flip_to = "INVERSE"
+                        elif direction == "INVERSE" and ha_bull:
+                            self._exit("HA양봉전환(방향역전)", candle.close, context)
+                            flip_to = "LEVERAGE"
+                        # 색깔 전환 청산 성공 시 반대 방향 즉시 진입 (플립)
+                        # LEVERAGE_FLIP_ENABLED=false면 비활성 — 일반 진입 경로(1봉 쿨다운 후)만 사용
+                        if flip_to and not self._position and not self._force_exited_today:
+                            if getattr(config, "LEVERAGE_FLIP_ENABLED", False):
+                                if getattr(config, "LEVERAGE_ENABLED", True):
+                                    if entry_start <= now_hm <= entry_end:
+                                        if self._calc_signal(candles) == flip_to:
+                                            self._enter(flip_to, context)
+            else:
+                ma = self._calc_ma(candles, self.SIGNAL_MA_PERIOD)
+                if ma:
+                    if direction == "LEVERAGE" and candle.close < ma:
+                        self._exit("삼성MA하향(방향역전)", candle.close, context)
+                    elif direction == "INVERSE" and candle.close > ma:
+                        self._exit("삼성MA상향(방향역전)", candle.close, context)
             return
 
         # 신규 진입 체크
@@ -97,12 +143,16 @@ class LeverageInverseAgent(BaseAgent):
             return
         if self._force_exited_today:
             return
-        if not (self.ENTRY_START <= now_hm <= self.ENTRY_END):
+        if not (entry_start <= now_hm <= entry_end):
+            return
+        # 청산 직후 1캔들 쿨다운 — 연속 전환 매매 방지 (봉 주기 연동)
+        cooldown_sec = getattr(config, "LEVERAGE_CANDLE_INTERVAL", 3) * 60
+        if self._last_exit_time and (datetime.now() - self._last_exit_time).total_seconds() < cooldown_sec:
             return
         if len(candles) < self.SIGNAL_MA_PERIOD + self.SIGNAL_CONSEC:
             return
 
-        direction = self._calc_signal(candles)
+        direction = self._calc_signal(candles, harness)
         if direction:
             self._enter(direction, context)
 
@@ -110,8 +160,12 @@ class LeverageInverseAgent(BaseAgent):
     # 신호 계산 (전략 디스패처)
     # ─────────────────────────────────────────
 
-    def _calc_signal(self, candles: list) -> Optional[str]:
+    def _calc_signal(self, candles: list, harness=None) -> Optional[str]:
         strategy = getattr(config, "LEVERAGE_STRATEGY", "BASIC")
+        if strategy == "TREND_MACD":
+            return self._calc_signal_trend_macd(candles, harness)
+        if strategy == "BOLLINGER":
+            return self._calc_signal_bollinger(candles, harness)
         if strategy == "MACD_HA":
             return self._calc_signal_macd_ha(candles)
         return self._calc_signal_basic(candles)
@@ -138,30 +192,195 @@ class LeverageInverseAgent(BaseAgent):
             return "INVERSE"
         return None
 
+    # ── 일봉추세 + MACD 크로스 전략 ──────────────────────────────────
+    # 방향: 일봉 5MA/20MA 정배열(상승=골드/하락=데드)이 허용 방향을 결정
+    # 진입: 3분봉 MACD가 그 방향으로 골드/데드 크로스 하는 순간만
+    # 청산: 봉 색깔/신호 무관, 손절·트레일링(틱)·EOD(시각)만 (_on_samsung_candle 참조)
+
+    def _get_daily_trend(self, harness) -> Optional[str]:
+        """삼성전자 일봉 단기MA vs 장기MA 정배열로 당일 허용 매매방향 판단. 하루 1회 조회 후 캐시."""
+        fast_ma = getattr(config, "LEVERAGE_TREND_FAST_MA", 5)
+        slow_ma = getattr(config, "LEVERAGE_TREND_SLOW_MA", 20)
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._daily_trend_cache.get("date") == today:
+            return self._daily_trend_cache.get("trend")
+
+        try:
+            df = harness.kiwoom.get_daily_data(self.SAMSUNG_CODE, count=max(30, slow_ma + 10))
+        except Exception as e:
+            logger.warning(f"[LeverageAgent] 일봉 조회 실패: {e}")
+            return self._daily_trend_cache.get("trend")  # 실패 시 이전 캐시 유지
+
+        if df is None or df.empty:
+            return self._daily_trend_cache.get("trend")
+
+        rows = df.to_dict("records")
+        today_str = datetime.now().strftime("%Y%m%d")
+        if rows and str(rows[-1].get("date", "")) == today_str:
+            rows = rows[:-1]  # 오늘 형성 중인 봉 제외 — 전일까지 확정봉만 사용 (장중 노이즈로 추세 흔들림 방지)
+
+        if len(rows) < slow_ma:
+            logger.warning(f"[LeverageAgent] 일봉 데이터 부족({len(rows)}/{slow_ma}) → 추세 판단 불가")
+            return None
+
+        closes = [r["close"] for r in rows]
+        maf = sum(closes[-fast_ma:]) / fast_ma
+        mas = sum(closes[-slow_ma:]) / slow_ma
+        trend = "UP" if maf > mas else ("DOWN" if maf < mas else None)
+
+        self._daily_trend_cache = {"date": today, "trend": trend}
+        logger.info(f"[LeverageAgent] 일봉추세 갱신: MA{fast_ma}={maf:,.0f} MA{slow_ma}={mas:,.0f} → {trend}")
+        return trend
+
+    def _calc_signal_trend_macd(self, candles: list, harness) -> Optional[str]:
+        min_bars = getattr(config, "LEVERAGE_MACD_SLOW", 26) + getattr(config, "LEVERAGE_MACD_SIGNAL", 9)
+        closed = [c for c in candles if c.is_closed]
+        closes = self._compressed_closes(closed)
+        if len(closes) < min_bars or harness is None:
+            return None
+
+        trend = self._get_daily_trend(harness)
+        if trend is None:
+            return None
+
+        fast = getattr(config, "LEVERAGE_MACD_FAST",   12)
+        slow = getattr(config, "LEVERAGE_MACD_SLOW",   26)
+        sig  = getattr(config, "LEVERAGE_MACD_SIGNAL",  9)
+
+        macd_now, sig_now = self._calc_macd_values(closes, fast, slow, sig)
+        macd_prev, sig_prev = self._calc_macd_values(closes[:-1], fast, slow, sig)
+        if macd_now is None or macd_prev is None:
+            return None
+
+        golden = macd_prev <= sig_prev and macd_now > sig_now
+        dead   = macd_prev >= sig_prev and macd_now < sig_now
+        logger.debug(
+            f"[LeverageAgent] 일봉추세={trend} MACD {macd_prev:+.4f}->{macd_now:+.4f} "
+            f"Signal {sig_prev:+.4f}->{sig_now:+.4f} golden={golden} dead={dead}"
+        )
+
+        if trend == "UP" and golden:
+            return "LEVERAGE"
+        if trend == "DOWN" and dead:
+            return "INVERSE"
+        return None
+
+    # ── 볼린저밴드 돌파 전략 (일봉추세 + 3분봉 상/하단 돌파) ──────────
+
+    def _calc_signal_bollinger(self, candles: list, harness) -> Optional[str]:
+        period = getattr(config, "LEVERAGE_BB_PERIOD", 20)
+        mult   = getattr(config, "LEVERAGE_BB_MULT", 2.0)
+        closed = [c for c in candles if c.is_closed]
+        closes = self._compressed_closes(closed)
+        if len(closes) < period + 1 or harness is None:
+            return None
+
+        trend = self._get_daily_trend(harness)
+        if trend is None:
+            return None
+
+        _, upper_now, lower_now = self._calc_bollinger_values(closes, period, mult)
+        _, upper_prev, lower_prev = self._calc_bollinger_values(closes[:-1], period, mult)
+        if upper_now is None or upper_prev is None:
+            return None
+
+        close_now, close_prev = closes[-1], closes[-2]
+        breakout_up   = close_prev <= upper_prev and close_now > upper_now
+        breakout_down = close_prev >= lower_prev and close_now < lower_now
+        logger.debug(
+            f"[LeverageAgent] 일봉추세={trend} BB상단 {upper_prev:.0f}->{upper_now:.0f} "
+            f"BB하단 {lower_prev:.0f}->{lower_now:.0f} close {close_prev}->{close_now} "
+            f"up={breakout_up} down={breakout_down}"
+        )
+
+        if trend == "UP" and breakout_up:
+            return "LEVERAGE"
+        if trend == "DOWN" and breakout_down:
+            return "INVERSE"
+        return None
+
+    def _compressed_closes(self, closed: list) -> list:
+        """15:30 초과 봉(KRX 애프터마켓 16~20시)을 하루 1봉으로 압축한 종가 리스트.
+
+        애프터마켓은 삼성전자 거래량의 4%인데 3분봉으로는 하루 208봉 중 80봉(38%)이라,
+        압축하지 않으면 장 초반 지표 창이 체결 불가능한(ETF는 애프터마켓 거래 대상 제외)
+        얇은 호가에 지배된다. 2026-09-14 애프터마켓 개장 이전 정의(하루 1봉)와도 일치한다.
+        """
+        closes, pend = [], None
+        for c in closed:
+            if c.datetime.strftime("%H%M") > self.REGULAR_CLOSE_HM:
+                pend = c.close
+            else:
+                if pend is not None:
+                    closes.append(pend)
+                    pend = None
+                closes.append(c.close)
+        if pend is not None:
+            closes.append(pend)
+        return closes
+
+    def _calc_bollinger_values(self, closes: list, period: int, mult: float):
+        """(mid, upper, lower) — closes 마지막 시점 기준. 데이터 부족 시 (None, None, None)"""
+        if len(closes) < period:
+            return None, None, None
+        window = closes[-period:]
+        m = sum(window) / period
+        var = sum((c - m) ** 2 for c in window) / period
+        sd = var ** 0.5
+        return m, m + mult * sd, m - mult * sd
+
     # ── MACD + 하이킨아시 전략 ──────────────────────────────────────
 
     def _calc_signal_macd_ha(self, candles: list) -> Optional[str]:
         closed = [c for c in candles if c.is_closed]
-        fast   = getattr(config, "LEVERAGE_MACD_FAST",   12)
-        slow   = getattr(config, "LEVERAGE_MACD_SLOW",   26)
-        sig    = getattr(config, "LEVERAGE_MACD_SIGNAL",  9)
-        if len(closed) < slow + sig - 1:
+        if len(closed) < self.SIGNAL_MA_PERIOD:
             return None
 
         ha      = self._calc_heikin_ashi(closed)
         last_ha = ha[-1]
+
+        # 도지 무시 (봉 범위 대비 몸통 비율 미만 — config LEVERAGE_DOJI_TH)
+        body = abs(last_ha["close"] - last_ha["open"])
+        rng  = last_ha["high"] - last_ha["low"]
+        if rng > 0 and body / rng < getattr(config, "LEVERAGE_DOJI_TH", 0.2):
+            return None
+
         ha_bull = last_ha["close"] > last_ha["open"]
         ha_bear = last_ha["close"] < last_ha["open"]
 
-        macd_val, signal_val = self._calc_macd_values(
-            [c.close for c in closed], fast, slow, sig
-        )
-        if macd_val is None:
-            return None
+        # MACD 진입 조건 (HA 색깔과 함께 AND 조건)
+        fast = getattr(config, "LEVERAGE_MACD_FAST",   12)
+        slow = getattr(config, "LEVERAGE_MACD_SLOW",   26)
+        sig  = getattr(config, "LEVERAGE_MACD_SIGNAL",  9)
+        macd_bull = False
+        macd_bear = False
+        if len(closed) >= slow + sig - 1:
+            macd_val, signal_val = self._calc_macd_values(
+                [c.close for c in closed], fast, slow, sig
+            )
+            if macd_val is not None:
+                macd_bull = macd_val > signal_val
+                macd_bear = macd_val < signal_val
+                trend = "상승" if macd_bull else "하락"
+                logger.debug(
+                    f"[LeverageAgent] MACD {macd_val:+.4f} / Signal {signal_val:+.4f} ({trend})"
+                )
 
-        if macd_val > signal_val and ha_bull:
+        # 추세필터: 종가가 SMA(LEVERAGE_MA_FILTER) 기준 신호 방향과 같은 쪽일 때만 진입 허용
+        # (역추세 휩쏘 진입 차단 — 0/미설정이면 비활성)
+        ma_period = getattr(config, "LEVERAGE_MA_FILTER", 0)
+        ma_ok_long = ma_ok_short = True
+        if ma_period and len(closed) >= ma_period:
+            sma = sum(c.close for c in closed[-ma_period:]) / ma_period
+            last_close = closed[-1].close
+            ma_ok_long  = last_close > sma
+            ma_ok_short = last_close < sma
+
+        # HA 색깔 AND MACD 방향 AND 추세필터 일치 시 진입
+        if ha_bull and macd_bull and ma_ok_long:
             return "LEVERAGE"
-        if macd_val < signal_val and ha_bear:
+        if ha_bear and macd_bear and ma_ok_short:
             return "INVERSE"
         return None
 
@@ -255,8 +474,10 @@ class LeverageInverseAgent(BaseAgent):
             logger.error(f"[LeverageAgent] 매수 주문 실패 ({etf_code}) ret={ret}")
             return
 
-        sl = round(price * (1 - self.SL_RATE))
-        tp = round(price * (1 + self.TP_RATE))
+        sl_rate = getattr(config, "LEVERAGE_SL_RATE", self.SL_RATE)
+        tp_rate = getattr(config, "LEVERAGE_TP_RATE", self.TP_RATE)
+        sl = round(price * (1 - sl_rate))
+        tp = round(price * (1 + tp_rate))
 
         self._position = {
             "code":        etf_code,
@@ -266,6 +487,7 @@ class LeverageInverseAgent(BaseAgent):
             "entry_price": price,
             "stop_loss":   sl,
             "take_profit": tp,
+            "peak_ret":    0.0,   # 트레일링 스탑용 최고 favorable 수익률
             "entered_at":  datetime.now().isoformat(),
         }
 
@@ -283,8 +505,8 @@ class LeverageInverseAgent(BaseAgent):
             notifier.send(
                 f"🟢 <b>레버리지 전략 진입</b> [{etf_name}({etf_code})]\n"
                 f"방향: {label} | {qty}주 @ {price:,}원\n"
-                f"손절: {sl:,}원 (-{self.SL_RATE:.1%}) | "
-                f"익절: {tp:,}원 (+{self.TP_RATE:.1%})"
+                f"손절: {sl:,}원 (-{sl_rate:.1%}) | "
+                f"익절: {tp:,}원 (+{tp_rate:.1%})"
             )
 
     # ─────────────────────────────────────────
@@ -313,18 +535,22 @@ class LeverageInverseAgent(BaseAgent):
 
         if ret != 0:
             logger.error(f"[LeverageAgent] 매도 주문 실패 ({etf_code}) ret={ret}")
+            return  # 주문 실패 시 포지션 유지
 
         exit_price = self._last_etf_price.get(etf_code, 0) or ref_price
+        pnl        = (exit_price - pos["entry_price"]) * qty
         pnl_rate   = (exit_price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] else 0.0
-        self._position = None
+        self._position     = None
+        self._last_exit_time = datetime.now()  # 재진입 쿨다운 시작
 
         logger.info(
             f"[LeverageAgent] 청산({reason}): {etf_name}({etf_code}) "
-            f"{qty}주 @ {exit_price:,}원 | PnL {pnl_rate:+.2%} | ord={ord_no}"
+            f"{qty}주 @ {exit_price:,}원 | PnL {pnl:+,.0f}원 ({pnl_rate:+.2%}) | ord={ord_no}"
         )
         self.trade_logger.log_trade(
             code=etf_code, name=etf_name, side="SELL",
-            qty=qty, price=exit_price, reason=reason
+            qty=qty, price=exit_price,
+            pnl=pnl, pnl_rate=pnl_rate, reason=reason
         )
         notifier = harness.get_context().get("notifier")
         if notifier:
@@ -345,6 +571,16 @@ class LeverageInverseAgent(BaseAgent):
         pos = self._position
         if price <= pos["stop_loss"]:
             self._exit("손절", price, context)
+            return
+
+        trail_gap = getattr(config, "LEVERAGE_TRAIL_GAP", 0)
+        if trail_gap:
+            sl_rate = getattr(config, "LEVERAGE_SL_RATE", self.SL_RATE)
+            cur_ret = (price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] else 0.0
+            pos["peak_ret"] = max(pos.get("peak_ret", 0.0), cur_ret)
+            # peak 수익이 최소 SL_RATE만큼 확보된 뒤 peak 대비 trail_gap만큼 되밀리면 청산
+            if pos["peak_ret"] >= sl_rate and (pos["peak_ret"] - cur_ret) >= trail_gap:
+                self._exit("트레일링청산", price, context)
         elif price >= pos["take_profit"]:
             self._exit("익절", price, context)
 

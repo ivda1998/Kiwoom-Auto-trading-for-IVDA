@@ -98,7 +98,7 @@ VM_MODE = _os.environ.get("VM_MODE", "false").lower() == "true"
 # 전략 활성화 토글 (런타임에서 텔레그램 /strategy 명령으로 변경 가능)
 # ─────────────────────────────────────────
 VM_PICKS_ENABLED      = _os.environ.get("VM_PICKS_ENABLED",  "true").lower() == "true"
-BREAKOUT_ENABLED      = _os.environ.get("BREAKOUT_ENABLED",  "true").lower() == "true"
+BREAKOUT_ENABLED      = _os.environ.get("BREAKOUT_ENABLED",  "false").lower() == "true"
 LEVERAGE_ENABLED      = _os.environ.get("LEVERAGE_ENABLED",  "true").lower() == "true"
 BREAKOUT_TRADE_AMOUNT = int(_os.environ.get("BREAKOUT_TRADE_AMOUNT", "0"))  # 0 = POSITION_RATIO 비율 사용
 
@@ -294,18 +294,33 @@ MARKET_FILTER_MA   = 5
 LEVERAGE_ETF_CODE     = "0193W0"   # KODEX 삼성전자단일종목레버리지
 INVERSE_ETF_CODE      = "0193L0"   # PLUS 삼성전자단일종목인버스2x
 LEVERAGE_SAMSUNG_CODE = "005930"   # 신호원 종목
-LEVERAGE_AMOUNT       = int(_os.environ.get("LEVERAGE_AMOUNT", "500000"))  # 회당 투자금
-LEVERAGE_SL_RATE      = 0.015      # ETF 손절 -1.5%
-LEVERAGE_TP_RATE      = 0.030      # ETF 익절 +3.0%
-LEVERAGE_ENTRY_START  = "09:00"
+LEVERAGE_AMOUNT       = int(_os.environ.get("LEVERAGE_AMOUNT", "2000000"))  # 회당 투자금
+LEVERAGE_SL_RATE      = float(_os.environ.get("LEVERAGE_SL_RATE", "0.025"))  # ETF 손절 -2.5%
+LEVERAGE_TP_RATE      = float(_os.environ.get("LEVERAGE_TP_RATE", "0.040"))  # ETF 익절 +4.0% (TRAIL_GAP 활성 시 미사용)
+LEVERAGE_TRAIL_GAP    = float(_os.environ.get("LEVERAGE_TRAIL_GAP", "0.015"))  # 트레일링 스탑 폭 (0/빈값이면 비활성 → 고정 TP 사용)
+LEVERAGE_MA_FILTER    = int(_os.environ.get("LEVERAGE_MA_FILTER", "20"))     # 진입 시 추세필터 SMA 기간(봉수), 0이면 비활성
+LEVERAGE_DOJI_TH      = float(_os.environ.get("LEVERAGE_DOJI_TH", "0.15"))   # HA 도지 판정: 몸통/범위 비율
+LEVERAGE_CANDLE_INTERVAL = int(_os.environ.get("LEVERAGE_CANDLE_INTERVAL", "3"))  # 삼성전자 신호 분봉 주기(분)
+LEVERAGE_FLIP_ENABLED = _os.environ.get("LEVERAGE_FLIP_ENABLED", "false").lower() == "true"  # 청산 직후 반대방향 즉시 진입 (TREND_MACD는 미사용)
+LEVERAGE_ENTRY_START  = _os.environ.get("LEVERAGE_ENTRY_START", "10:00")     # 진입 시작 시각
 LEVERAGE_ENTRY_END    = "15:00"
 LEVERAGE_FORCE_EXIT   = "15:20"
 
-# 신호 전략 선택: "BASIC" (연속봉+5MA) | "MACD_HA" (MACD+하이킨아시)
-LEVERAGE_STRATEGY     = _os.environ.get("LEVERAGE_STRATEGY", "BASIC").upper()
-LEVERAGE_MACD_FAST    = int(_os.environ.get("LEVERAGE_MACD_FAST",   "12"))
-LEVERAGE_MACD_SLOW    = int(_os.environ.get("LEVERAGE_MACD_SLOW",   "26"))
-LEVERAGE_MACD_SIGNAL  = int(_os.environ.get("LEVERAGE_MACD_SIGNAL", "9"))
+# 신호 전략 선택: "BOLLINGER" (일봉추세+BB돌파, 기본) | "TREND_MACD" | "MACD_HA"/"BASIC" (레거시)
+LEVERAGE_STRATEGY     = _os.environ.get("LEVERAGE_STRATEGY", "BOLLINGER").upper()
+LEVERAGE_MACD_FAST    = int(_os.environ.get("LEVERAGE_MACD_FAST",   "5"))
+LEVERAGE_MACD_SLOW    = int(_os.environ.get("LEVERAGE_MACD_SLOW",   "13"))
+LEVERAGE_MACD_SIGNAL  = int(_os.environ.get("LEVERAGE_MACD_SIGNAL", "6"))
+LEVERAGE_TREND_FAST_MA = int(_os.environ.get("LEVERAGE_TREND_FAST_MA", "10"))  # 일봉 추세필터 단기 SMA(일)
+LEVERAGE_TREND_SLOW_MA = int(_os.environ.get("LEVERAGE_TREND_SLOW_MA", "20"))  # 일봉 추세필터 장기 SMA(일)
+LEVERAGE_BB_PERIOD    = int(_os.environ.get("LEVERAGE_BB_PERIOD", "29"))     # 볼린저밴드 기간(봉수)
+LEVERAGE_BB_MULT      = float(_os.environ.get("LEVERAGE_BB_MULT", "0.8"))    # 볼린저밴드 표준편차 승수
+
+# ─────────────────────────────────────────
+# 거래세 (세후 손익 계산용)
+# ─────────────────────────────────────────
+# 코스피 농어촌특별세 0.15% + 코스닥 거래세 0.18% → 보수적으로 0.18% 일괄 적용
+TRANSACTION_TAX_RATE = float(_os.environ.get("TRANSACTION_TAX_RATE", "0.0018"))
 
 # ─────────────────────────────────────────
 # 로그 / DB

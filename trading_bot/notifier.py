@@ -1,5 +1,6 @@
 # notifier.py — 텔레그램 알림 + 원격 명령 수신
 
+import html
 import logging
 import threading
 import time
@@ -219,7 +220,9 @@ class TelegramLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord):
         try:
-            msg = self.format(record)
-            self.notifier.send(f"⚠️ <b>에러 발생</b>\n<code>{msg[:1000]}</code>")
+            # 이스케이프 없이 보내면 로그에 든 '<Handle ...>' 같은 텍스트 때문에
+            # 텔레그램 HTML 파싱이 실패해 에러 알림 자체가 사라진다 (2026-09-23 실제 발생).
+            msg = html.escape(self.format(record)[:1000])
+            self.notifier.send(f"⚠️ <b>에러 발생</b>\n<code>{msg}</code>")
         except Exception:
             pass

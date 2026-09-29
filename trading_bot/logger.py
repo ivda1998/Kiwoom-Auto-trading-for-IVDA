@@ -123,21 +123,37 @@ class TradeLogger:
             conn.commit()
 
     def update_daily_summary(self, trade_date: str = None):
-        """일별 요약 집계"""
+        """일별 요약 집계 — 승/패는 거래세 차감 후 기준"""
         if trade_date is None:
             trade_date = datetime.now().strftime("%Y-%m-%d")
 
+        tax_rate = getattr(config, "TRANSACTION_TAX_RATE", 0.0018)
+
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute("""
-                SELECT pnl FROM trades
+                SELECT pnl, amount FROM trades
                 WHERE trade_date = ? AND side = 'SELL'
             """, (trade_date,)).fetchall()
 
-            total = len(rows)
-            wins = sum(1 for r in rows if r[0] > 0)
-            loses = sum(1 for r in rows if r[0] <= 0)
-            total_pnl = sum(r[0] for r in rows)
+            total        = len(rows)
+            wins         = 0
+            loses        = 0
+            total_pnl    = 0.0   # 세후 합계
+            total_amount = 0.0   # 매도 거래금액 합계
+
+            for pnl, amount in rows:
+                tax     = (amount or 0) * tax_rate
+                pnl_net = (pnl or 0) - tax
+                total_pnl    += pnl_net
+                total_amount += (amount or 0)
+                if pnl_net > 0:
+                    wins += 1
+                else:
+                    loses += 1
+
             win_rate = wins / total if total > 0 else 0.0
+            # 거래금액 대비 수익률 (총 매도금액 대비 세후 손익)
+            pnl_rate = total_pnl / total_amount if total_amount > 0 else 0.0
 
             conn.execute("""
                 INSERT INTO daily_summary
@@ -154,12 +170,14 @@ class TradeLogger:
             conn.commit()
 
         return {
-            "date": trade_date,
-            "total": total,
-            "wins": wins,
-            "loses": loses,
-            "total_pnl": total_pnl,
-            "win_rate": win_rate
+            "date":         trade_date,
+            "total":        total,
+            "wins":         wins,
+            "loses":        loses,
+            "total_pnl":    total_pnl,    # 거래세 차감 후
+            "total_amount": total_amount, # 총 매도 거래금액
+            "pnl_rate":     pnl_rate,     # 거래금액 대비 수익률
+            "win_rate":     win_rate,
         }
 
     def get_today_trades(self) -> list:
