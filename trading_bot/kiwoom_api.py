@@ -569,6 +569,168 @@ class KiwoomAPI:
             return {"individual": None, "institution": None, "foreign": None}
 
     # ─────────────────────────────────────────
+    # 등락률 순위 (상한가/급등종목) - REST
+    # ─────────────────────────────────────────
+    # pred_pre_sig(전일대비부호) 코드값 — 실측 확인(2026-09-30, mock API):
+    #   1=상한  2=상승  3=보합  4=하락  5=하한  (미확인 항목은 실측 시 보정)
+    _PRED_PRE_SIG_LABEL = {"1": "상한", "2": "상승", "3": "보합", "4": "하락", "5": "하한"}
+
+    # ETF/ETN 종목명 흔한 운용사 브랜드 접두사 (관리종목/ETF/ETN 제외용, 2026-10-01)
+    # rkinfo 랭킹 TR들의 stk_cnd 파라미터로 서버 필터링을 시도했으나 ka10027/ka10031
+    # 양쪽 다 값을 바꿔도 결과가 동일해(실측) 서버 쪽 필터가 신뢰할 수 없다고 판단 —
+    # 종목명 패턴으로 클라이언트 측에서 직접 제외한다.
+    _ETF_ETN_NAME_PREFIXES = (
+        "KODEX", "TIGER", "ACE ", "SOL ", "KBSTAR", "HANARO", "KOSEF",
+        "ARIRANG", "KINDEX", "PLUS ", "RISE ", "마이다스", "네비게이터",
+        "타임폴리오", "히어로즈", "WOORI", "FOCUS", "파워",
+    )
+
+    @classmethod
+    def _is_etf_etn(cls, name: str) -> bool:
+        if "ETN" in name:
+            return True
+        return any(name.startswith(p) for p in cls._ETF_ETN_NAME_PREFIXES)
+
+    def get_top_change_rate(self, market: str = "000", updown_incls: bool = True,
+                             min_volume: str = "0000", upper_limit_only: bool = False,
+                             limit: Optional[int] = None) -> list:
+        """ka10027 - 전일대비등락률상위요청 (등락률 상위 종목, 상한가 포함)
+
+        market: mrkt_tp — "000"=전체, "001"=코스피, "101"=코스닥
+        updown_incls: 상하한가 포함 여부 (True 권장 — 상한가 종목이 목록에서 빠지지 않게)
+        min_volume: trde_qty_cnd — 거래량 필터 하한("0000"=제한없음, "0010"=만주이상 등)
+        upper_limit_only: True면 pred_pre_sig=="1"(상한가)인 종목만 반환
+        limit: 반환 개수 제한 (None이면 서버가 주는 첫 페이지 그대로, 최대 200개 —
+               200개 너머는 cont_yn/next_key 페이지네이션 미구현이라 안 옴)
+
+        관리종목/ETF/ETN/1,000원 미만 동전주는 항상 제외(서버 stk_cnd 필터는 실측상
+        신뢰 불가라 클라이언트에서 필터링, 2026-10-01).
+
+        반환: [{"code","name","current_price","change_amount","flu_rt","sign","volume"}, ...]
+        (flu_rt 내림차순)
+        """
+        try:
+            data = self._post(
+                "/api/dostk/rkinfo",
+                body={
+                    "mrkt_tp": market, "sort_tp": "1",
+                    "trde_qty_cnd": min_volume, "stk_cnd": "1", "crd_cnd": "0",
+                    "updown_incls": "1" if updown_incls else "0",
+                    "pric_cnd": "0", "trde_prica_cnd": "0", "mrkt_open_cnd": "0",
+                    "stex_tp": "1",
+                },
+                api_id="ka10027",
+            )
+            items = data.get("pred_pre_flu_rt_upper", [])
+            out = []
+            for item in items:
+                sig = str(item.get("pred_pre_sig", "")).strip()
+                if upper_limit_only and sig != "1":
+                    continue
+
+                name = item.get("stk_nm", "")
+                if self._is_etf_etn(name):
+                    continue
+
+                def _num(key):
+                    raw = str(item.get(key, "0")).replace(",", "").strip()
+                    try:
+                        return int(raw.lstrip("+-")) * (-1 if raw.startswith("-") else 1)
+                    except ValueError:
+                        return 0
+
+                if _num("cur_prc") < 1000:
+                    continue
+
+                flu_rt_raw = str(item.get("flu_rt", "0")).replace(",", "").strip()
+                try:
+                    flu_rt = float(flu_rt_raw.lstrip("+-")) * (-1 if flu_rt_raw.startswith("-") else 1)
+                except ValueError:
+                    flu_rt = 0.0
+
+                out.append({
+                    "code":           item.get("stk_cd", ""),
+                    "name":           name,
+                    "current_price":  _num("cur_prc"),
+                    "change_amount":  _num("pred_pre"),
+                    "flu_rt":         flu_rt,
+                    "sign":           self._PRED_PRE_SIG_LABEL.get(sig, sig),
+                    "volume":         _num("now_trde_qty"),
+                })
+            return out[:limit] if limit else out
+        except Exception as e:
+            logger.error(f"[KiwoomAPI] 등락률상위 조회 실패: {e}")
+            return []
+
+    def get_volume_surge(self, market: str = "000", sort_by: str = "qty",
+                          limit: Optional[int] = None) -> list:
+        """ka10023 - 거래량급증요청 (전일 거래량 대비 오늘 거래량이 급증한 종목)
+
+        market: mrkt_tp — "000"=전체, "001"=코스피, "101"=코스닥
+        sort_by: "qty"=급증수량(sdnin_qty) 내림차순(기본 — 등락률 상위와 겹치는 실질적
+                 급등주를 더 잘 잡음) | "rate"=급증률(sdnin_rt) 내림차순 (저유동성
+                 ETF/ETN 위주로 잡혀 가격 급등과 상관성이 낮음, 실측 2026-09-30 확인)
+        limit: 반환 개수 제한 (None이면 최대 200개, get_top_change_rate와 동일 제약)
+
+        관리종목/ETF/ETN/1,000원 미만 동전주는 항상 제외(클라이언트 필터, 2026-10-01 —
+        get_top_change_rate와 동일한 사유).
+
+        반환: [{"code","name","current_price","flu_rt","sign",
+                "prev_volume","volume","surge_qty","surge_rate"}, ...]
+        """
+        sort_tp = "1" if sort_by == "qty" else "2"
+        try:
+            data = self._post(
+                "/api/dostk/rkinfo",
+                body={
+                    "mrkt_tp": market, "sort_tp": sort_tp, "tm_tp": "1",
+                    "trde_qty_tp": "0000", "stk_cnd": "1", "pric_tp": "0",
+                    "stex_tp": "1",
+                },
+                api_id="ka10023",
+            )
+            items = data.get("trde_qty_sdnin", [])
+            out = []
+            for item in items:
+                sig = str(item.get("pred_pre_sig", "")).strip()
+                name = item.get("stk_nm", "")
+                if self._is_etf_etn(name):
+                    continue
+
+                def _num(key):
+                    raw = str(item.get(key, "0")).replace(",", "").strip()
+                    try:
+                        return int(raw.lstrip("+-")) * (-1 if raw.startswith("-") else 1)
+                    except ValueError:
+                        return 0
+
+                def _flt(key):
+                    raw = str(item.get(key, "0")).replace(",", "").strip()
+                    try:
+                        return float(raw.lstrip("+-")) * (-1 if raw.startswith("-") else 1)
+                    except ValueError:
+                        return 0.0
+
+                if _num("cur_prc") < 1000:
+                    continue
+
+                out.append({
+                    "code":          item.get("stk_cd", ""),
+                    "name":          name,
+                    "current_price": _num("cur_prc"),
+                    "flu_rt":        _flt("flu_rt"),
+                    "sign":          self._PRED_PRE_SIG_LABEL.get(sig, sig),
+                    "prev_volume":   _num("prev_trde_qty"),
+                    "volume":        _num("now_trde_qty"),
+                    "surge_qty":     _num("sdnin_qty"),
+                    "surge_rate":    _flt("sdnin_rt"),
+                })
+            return out[:limit] if limit else out
+        except Exception as e:
+            logger.error(f"[KiwoomAPI] 거래량급증 조회 실패: {e}")
+            return []
+
+    # ─────────────────────────────────────────
     # 일봉 데이터 - REST
     # ─────────────────────────────────────────
     def get_daily_data(self, code: str, count: int = 70) -> Optional[pd.DataFrame]:
@@ -1183,3 +1345,31 @@ class KiwoomAPI:
     # ─────────────────────────────────────────
     def _throttle(self, seconds: float = 0.25):
         time.sleep(seconds)
+
+
+def classify_movers_overlap(movers: list, surges: list) -> dict:
+    """등락률 상위 리스트(get_top_change_rate)와 거래량급증 상위 리스트(get_volume_surge)를
+    종목코드 기준으로 비교해 3그룹으로 분류.
+
+    반환: {"overlap": [...], "movers_only": [...], "surge_only": [...]}
+    overlap 항목은 두 리스트의 정보를 병합(거래량급증 쪽 고유 필드는 "surge_" 접두사)해서 반환.
+    """
+    surge_map = {s["code"]: s for s in surges if s.get("code")}
+    mover_codes = {m["code"] for m in movers if m.get("code")}
+
+    overlap, movers_only = [], []
+    for m in movers:
+        s = surge_map.get(m.get("code"))
+        if s is not None:
+            merged = dict(m)
+            for k, v in s.items():
+                if k in ("code", "name"):
+                    continue
+                key = k if k.startswith("surge_") else f"surge_{k}"
+                merged[key] = v
+            overlap.append(merged)
+        else:
+            movers_only.append(m)
+
+    surge_only = [s for s in surges if s.get("code") not in mover_codes]
+    return {"overlap": overlap, "movers_only": movers_only, "surge_only": surge_only}

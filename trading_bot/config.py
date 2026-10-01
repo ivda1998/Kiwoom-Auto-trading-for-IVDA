@@ -296,8 +296,17 @@ INVERSE_ETF_CODE      = "0193L0"   # PLUS 삼성전자단일종목인버스2x
 LEVERAGE_SAMSUNG_CODE = "005930"   # 신호원 종목
 LEVERAGE_AMOUNT       = int(_os.environ.get("LEVERAGE_AMOUNT", "2000000"))  # 회당 투자금
 LEVERAGE_SL_RATE      = float(_os.environ.get("LEVERAGE_SL_RATE", "0.025"))  # ETF 손절 -2.5%
-LEVERAGE_TP_RATE      = float(_os.environ.get("LEVERAGE_TP_RATE", "0.040"))  # ETF 익절 +4.0% (TRAIL_GAP 활성 시 미사용)
-LEVERAGE_TRAIL_GAP    = float(_os.environ.get("LEVERAGE_TRAIL_GAP", "0.015"))  # 트레일링 스탑 폭 (0/빈값이면 비활성 → 고정 TP 사용)
+LEVERAGE_TP_RATE      = float(_os.environ.get("LEVERAGE_TP_RATE", "0.040"))  # ETF 익절 +4.0% (2단계 트레일링 활성 시 미사용, 레거시)
+LEVERAGE_TRAIL_GAP    = float(_os.environ.get("LEVERAGE_TRAIL_GAP", "0.015"))  # 레거시 단일 트레일링 폭 (2단계 트레일링으로 대체됨, 미사용)
+
+# 2단계(계단식) 트레일링 스탑 (2026-10-01) — 수익이 커질수록 보수적으로 지킨다.
+#   peak_ret < STAGE1_RET            : 트레일링 비활성, LEVERAGE_SL_RATE 손절가만 유효
+#   STAGE1_RET <= peak_ret < STAGE2_RET : 수익 STAGE1_LOCK 마지노선 (그 밑으로 밀리면 청산)
+#   peak_ret >= STAGE2_RET            : 피크 대비 STAGE2_GAP 트레일링으로 전환(더 좁게 추적)
+LEVERAGE_TRAIL_STAGE1_RET  = float(_os.environ.get("LEVERAGE_TRAIL_STAGE1_RET",  "0.025"))
+LEVERAGE_TRAIL_STAGE1_LOCK = float(_os.environ.get("LEVERAGE_TRAIL_STAGE1_LOCK", "0.025"))
+LEVERAGE_TRAIL_STAGE2_RET  = float(_os.environ.get("LEVERAGE_TRAIL_STAGE2_RET",  "0.035"))
+LEVERAGE_TRAIL_STAGE2_GAP  = float(_os.environ.get("LEVERAGE_TRAIL_STAGE2_GAP",  "0.01"))
 LEVERAGE_MA_FILTER    = int(_os.environ.get("LEVERAGE_MA_FILTER", "20"))     # 진입 시 추세필터 SMA 기간(봉수), 0이면 비활성
 LEVERAGE_DOJI_TH      = float(_os.environ.get("LEVERAGE_DOJI_TH", "0.15"))   # HA 도지 판정: 몸통/범위 비율
 LEVERAGE_CANDLE_INTERVAL = int(_os.environ.get("LEVERAGE_CANDLE_INTERVAL", "3"))  # 삼성전자 신호 분봉 주기(분)
@@ -315,6 +324,11 @@ LEVERAGE_TREND_FAST_MA = int(_os.environ.get("LEVERAGE_TREND_FAST_MA", "10"))  #
 LEVERAGE_TREND_SLOW_MA = int(_os.environ.get("LEVERAGE_TREND_SLOW_MA", "20"))  # 일봉 추세필터 장기 SMA(일)
 LEVERAGE_BB_PERIOD    = int(_os.environ.get("LEVERAGE_BB_PERIOD", "29"))     # 볼린저밴드 기간(봉수)
 LEVERAGE_BB_MULT      = float(_os.environ.get("LEVERAGE_BB_MULT", "0.8"))    # 볼린저밴드 표준편차 승수
+
+# ─────────────────────────────────────────
+# 개별주 계획매매 (PersonalInvestAgent) — /invest 명령으로 진입가/목표가/손절가 등록
+# ─────────────────────────────────────────
+PERSONAL_INVEST_AMOUNT = int(_os.environ.get("PERSONAL_INVEST_AMOUNT", "3000000"))  # 회당 투자금(기본)
 
 # ─────────────────────────────────────────
 # 거래세 (세후 손익 계산용)

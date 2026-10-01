@@ -566,6 +566,12 @@ class LeverageInverseAgent(BaseAgent):
     # ─────────────────────────────────────────
 
     def _check_etf_sl_tp(self, code: str, price: int, context):
+        """2단계(계단식) 트레일링 스탑 (2026-10-01):
+          peak_ret < STAGE1_RET              : 트레일링 비활성 — stop_loss(진입가 기준)만 유효
+          STAGE1_RET <= peak_ret < STAGE2_RET : 수익 STAGE1_LOCK 마지노선 (밑으로 밀리면 청산)
+          peak_ret >= STAGE2_RET              : 피크 대비 STAGE2_GAP 트레일링 (더 좁게 추적)
+        peak_ret는 한 번 올라가면 내려가지 않으므로 단계도 한쪽으로만 진행(래칫).
+        """
         if not self._position or self._position["code"] != code:
             return
         pos = self._position
@@ -573,16 +579,22 @@ class LeverageInverseAgent(BaseAgent):
             self._exit("손절", price, context)
             return
 
-        trail_gap = getattr(config, "LEVERAGE_TRAIL_GAP", 0)
-        if trail_gap:
-            sl_rate = getattr(config, "LEVERAGE_SL_RATE", self.SL_RATE)
-            cur_ret = (price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] else 0.0
-            pos["peak_ret"] = max(pos.get("peak_ret", 0.0), cur_ret)
-            # peak 수익이 최소 SL_RATE만큼 확보된 뒤 peak 대비 trail_gap만큼 되밀리면 청산
-            if pos["peak_ret"] >= sl_rate and (pos["peak_ret"] - cur_ret) >= trail_gap:
-                self._exit("트레일링청산", price, context)
-        elif price >= pos["take_profit"]:
-            self._exit("익절", price, context)
+        entry = pos["entry_price"]
+        cur_ret = (price - entry) / entry if entry else 0.0
+        pos["peak_ret"] = max(pos.get("peak_ret", 0.0), cur_ret)
+        peak = pos["peak_ret"]
+
+        stage1_ret  = getattr(config, "LEVERAGE_TRAIL_STAGE1_RET",  0.025)
+        stage1_lock = getattr(config, "LEVERAGE_TRAIL_STAGE1_LOCK", 0.025)
+        stage2_ret  = getattr(config, "LEVERAGE_TRAIL_STAGE2_RET",  0.035)
+        stage2_gap  = getattr(config, "LEVERAGE_TRAIL_STAGE2_GAP",  0.01)
+
+        if peak >= stage2_ret:
+            if (peak - cur_ret) >= stage2_gap:
+                self._exit("트레일링청산(2단계)", price, context)
+        elif peak >= stage1_ret:
+            if cur_ret <= stage1_lock:
+                self._exit("수익보존청산(1단계)", price, context)
 
     # ─────────────────────────────────────────
     # EOD 강제 청산

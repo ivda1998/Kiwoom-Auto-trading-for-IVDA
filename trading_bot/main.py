@@ -9,7 +9,7 @@ from datetime import datetime
 
 import config
 from logger import setup_logger, TradeLogger
-from kiwoom_api import KiwoomAPI
+from kiwoom_api import KiwoomAPI, classify_movers_overlap
 from risk_manager import RiskManager
 from strategy import SignalType
 from notifier import TelegramNotifier, TelegramLogHandler
@@ -24,6 +24,7 @@ from hooks.market_filter_hook import MarketFilterHook
 from harness.kiwoom_harness import KiwoomHarness
 from agents.breakout_agent import BreakoutTradingAgent
 from agents.leverage_agent import LeverageInverseAgent
+from agents.personal_invest_agent import PersonalInvestAgent
 
 # 로거 초기화
 logger = setup_logger("main")
@@ -113,6 +114,9 @@ class TradingBot:
 
         self.leverage_agent = LeverageInverseAgent()
         self.harness.register_agent(self.leverage_agent)
+
+        self.personal_invest_agent = PersonalInvestAgent()
+        self.harness.register_agent(self.personal_invest_agent)
 
         # 6. 하네스 런타임 공유 컨텍스트 설정
         # ── 오브젝트 참조 ──────────────────────────────────────────────────
@@ -872,6 +876,12 @@ class TradingBot:
                         ag = self.leverage_agent
                         target_codes = list(dict.fromkeys(
                             target_codes + [ag.SAMSUNG_CODE, ag.LEVERAGE_CODE, ag.INVERSE_CODE]
+                        ))
+
+                    # 개별주 계획매매 종목 추가 (대기 계획 + 보유 포지션)
+                    if hasattr(self, "personal_invest_agent"):
+                        target_codes = list(dict.fromkeys(
+                            target_codes + self.personal_invest_agent.watched_codes()
                         ))
 
                     for code in target_codes:
@@ -1954,6 +1964,160 @@ class TradingBot:
                 lines.append("\n<i>/lev exit — 강제 청산</i>")
             return "\n".join(lines)
 
+        def cmd_invest(_args):
+            """개별주 계획매매 등록/조회/취소
+            등록: /invest 종목코드 entry=최소-최대 target=목표가 stop=손절가 [amount=금액]
+                  entry에 단일값만 주면 ±0.3% 범위로 자동 설정
+            조회: /invest list
+            취소: /invest cancel 종목코드
+            """
+            pia = self.personal_invest_agent
+            usage = (
+                "❓ 사용법:\n"
+                "/invest 종목코드 entry=최소-최대 target=목표가 stop=손절가 [amount=금액]\n"
+                "예: /invest 005930 entry=80000-82000 target=90000 stop=76000\n"
+                "/invest list — 현황 조회\n"
+                "/invest cancel 종목코드 — 대기 계획 취소"
+            )
+            args = (_args or "").strip()
+            if not args:
+                return usage
+
+            parts = args.split()
+            sub = parts[0].lower()
+
+            if sub == "list":
+                if not pia._plans and not pia._positions:
+                    return "📋 등록된 개별주 계획/포지션 없음"
+                lines = ["📋 <b>개별주 계획매매 현황</b>"]
+                if pia._plans:
+                    lines.append(f"\n⏳ <b>대기 중 계획 ({len(pia._plans)})</b>")
+                    for code, p in pia._plans.items():
+                        lines.append(
+                            f"{p['name']}({code}) 진입 {p['entry_min']:,.0f}~{p['entry_max']:,.0f} | "
+                            f"목표 {p['target']:,.0f} | 손절 {p['stop']:,.0f} | R:R {p['risk_reward']}"
+                        )
+                if pia._positions:
+                    lines.append(f"\n📂 <b>보유 중 ({len(pia._positions)})</b>")
+                    for code, p in pia._positions.items():
+                        lines.append(
+                            f"{p['name']}({code}) {p['qty']}주 @ {p['entry_price']:,.0f} | "
+                            f"목표 {p['target']:,.0f} | 손절 {p['stop']:,.0f}"
+                        )
+                return "\n".join(lines)
+
+            if sub == "cancel":
+                if len(parts) < 2:
+                    return "❓ 사용법: /invest cancel 종목코드"
+                code = parts[1]
+                ok = pia.cancel_plan(code)
+                return f"✅ {code} 계획 취소 완료" if ok else f"❌ {code} 대기 중인 계획 없음"
+
+            # 신규 등록
+            code = parts[0]
+            if not code.isdigit() or len(code) != 6:
+                return usage
+
+            kv = {}
+            for token in parts[1:]:
+                if "=" not in token:
+                    continue
+                k, v = token.split("=", 1)
+                kv[k.strip().lower()] = v.strip().replace(",", "")
+
+            if "entry" not in kv or "target" not in kv or "stop" not in kv:
+                return usage
+
+            try:
+                entry_raw = kv["entry"]
+                if "-" in entry_raw:
+                    e_min_s, e_max_s = entry_raw.split("-", 1)
+                    entry_min, entry_max = float(e_min_s), float(e_max_s)
+                else:
+                    base = float(entry_raw)
+                    entry_min, entry_max = base * 0.997, base * 1.003
+                target = float(kv["target"])
+                stop   = float(kv["stop"])
+                amount = int(float(kv.get("amount", config.PERSONAL_INVEST_AMOUNT)))
+            except ValueError:
+                return "❓ 숫자 형식이 올바르지 않습니다.\n" + usage
+
+            try:
+                info = self.kiwoom.get_stock_info(code)
+                name = info.get("name") or code
+            except Exception:
+                name = code
+
+            result = pia.register_plan(code, name, entry_min, entry_max, target, stop, amount)
+            if not result["ok"]:
+                return f"❌ {result['msg']}"
+
+            p = result["plan"]
+            return (
+                f"✅ <b>개별주 계획 등록</b> [{name}({code})]\n"
+                f"진입: {entry_min:,.0f}~{entry_max:,.0f}원 | 목표: {target:,.0f}원 | 손절: {stop:,.0f}원\n"
+                f"예정수량: {p['qty_planned']}주 (투자금 {amount:,}원) | 손익비(R:R) {p['risk_reward']}\n"
+                f"진입가 범위에 들어오면 자동 매수, 목표가/손절가 도달 시 자동 청산됩니다."
+            )
+
+        def cmd_movers(_args):
+            """등락률 상위 N + 거래량급증(절대수량) 상위 N 조회, 겹치는 종목 구분
+            사용법: /movers [N] (기본 N=50)
+            """
+            try:
+                limit = int(_args.strip()) if _args and _args.strip() else 50
+            except ValueError:
+                return "❓ 사용법: /movers [조회개수] (기본 50)"
+
+            movers = self.kiwoom.get_top_change_rate(limit=limit)
+            surges = self.kiwoom.get_volume_surge(limit=limit)  # 기본 qty(급증수량) 기준
+            if not movers and not surges:
+                return "❌ 조회 실패 (API 응답 없음)"
+
+            result = classify_movers_overlap(movers, surges)
+            overlap, movers_only, surge_only = (
+                result["overlap"], result["movers_only"], result["surge_only"]
+            )
+
+            # 텔레그램 메시지 길이(4096자) 보호용 섹션별 표시 상한 — N이 비정상적으로
+            # 커도(/movers 500 등) 메시지가 깨지지 않도록 별도 상한을 둠(조회 자체는 N 그대로)
+            DISPLAY_CAP = 60
+
+            def _fmt_section(items, with_surge_qty):
+                shown = items[:DISPLAY_CAP]
+                out = []
+                for r in shown:
+                    if with_surge_qty:
+                        out.append(f"{r['name']} {r['flu_rt']:+.1f}% | 급증수량 {r.get('surge_qty', 0):+,}주")
+                    else:
+                        out.append(f"{r['name']} {r['flu_rt']:+.1f}%")
+                if len(items) > DISPLAY_CAP:
+                    out.append(f"...외 {len(items) - DISPLAY_CAP}건 생략")
+                return out
+
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            lines = [
+                f"📊 <b>등락률·거래량급증 상위 {limit}개 비교</b>",
+                f"조회: {now_str}",
+                f"겹침 {len(overlap)} / 등락률만 {len(movers_only)} / 거래량만 {len(surge_only)}",
+            ]
+
+            if overlap:
+                lines.append(f"\n🔥 <b>겹치는 종목 ({len(overlap)})</b>")
+                lines += _fmt_section(
+                    sorted(overlap, key=lambda x: x["flu_rt"], reverse=True), with_surge_qty=True
+                )
+
+            if movers_only:
+                lines.append(f"\n📈 <b>등락률만 상위 ({len(movers_only)})</b>")
+                lines += _fmt_section(movers_only, with_surge_qty=False)
+
+            if surge_only:
+                lines.append(f"\n💹 <b>거래량만 급증 ({len(surge_only)})</b>")
+                lines += _fmt_section(surge_only, with_surge_qty=True)
+
+            return "\n".join(lines)
+
         def cmd_help(_args):
             return (
                 "📖 <b>사용 가능한 명령</b>\n"
@@ -1964,6 +2128,9 @@ class TradingBot:
                 "/validate — vm_picks.json 품질 검증\n"
                 "/picks — VM picks 종목·가격 현황\n"
                 "/strategy — 3전략 토글·금액 조회/변경\n"
+                "/movers [N] — 등락률·거래량급증 상위 N개 비교 (기본 50)\n"
+                "/invest 코드 entry=.. target=.. stop=.. — 개별주 계획매매 등록\n"
+                "/invest list|cancel 코드 — 계획 조회/취소\n"
                 "/sell — 전량 강제 청산\n"
                 "/reload — vm_picks.json 강제 재로드\n"
                 "/log — 최근 로그 15줄\n"
@@ -1978,6 +2145,8 @@ class TradingBot:
         n.register_command("picks",    cmd_picks)
         n.register_command("validate", cmd_validate)
         n.register_command("strategy", cmd_strategy)
+        n.register_command("movers",   cmd_movers)
+        n.register_command("invest",   cmd_invest)
         n.register_command("sell",     cmd_sell)
         n.register_command("stop",     cmd_stop)
         n.register_command("reload",   cmd_reload)
