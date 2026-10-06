@@ -72,6 +72,35 @@ class PersonalInvestAgent(BaseAgent):
     # ─────────────────────────────────────────
     # 계획 등록/취소/조회 (텔레그램 명령에서 호출)
     # ─────────────────────────────────────────
+    def get_all_positions(self) -> dict:
+        """보유 중인 개별주 계획매매 포지션 (code -> position dict)."""
+        return dict(self._positions)
+
+    def reconcile_with_account(self, real_qty_by_code: dict) -> list:
+        """실계좌에 없는(=외부에서 청산된) 보유 포지션을 제거.
+
+        이 에이전트가 직접 팔지 않은 경우(예: 다른 에이전트/일반 전략이 청산, 또는
+        수동 매도) 자기 상태가 실계좌와 어긋나 유령 포지션으로 남는다. 방치하면 조회에
+        계속 보유로 뜨고, 가격이 목표/손절에 닿으면 없는 수량을 팔려다 실패한다.
+        vm_manager._reconcile_with_account()와 같은 취지.
+        """
+        removed = []
+        for code in list(self._positions.keys()):
+            if real_qty_by_code.get(code, 0) <= 0:
+                pos = self._positions.pop(code)
+                removed.append((code, pos))
+                logger.warning(
+                    f"[PersonalInvest] 실계좌 미보유 확인 → 유령 포지션 제거: "
+                    f"{pos.get('name')}({code}) {pos.get('qty')}주"
+                )
+        if removed:
+            self._save_state()
+        return removed
+
+    def get_all_plans(self) -> dict:
+        """매수 대기 중인 등록 계획 (code -> plan dict)."""
+        return dict(self._plans)
+
     def watched_codes(self) -> list:
         """REST 틱 폴링 대상에 추가할 종목코드 (대기 계획 + 보유 포지션)."""
         return list(dict.fromkeys(list(self._plans.keys()) + list(self._positions.keys())))

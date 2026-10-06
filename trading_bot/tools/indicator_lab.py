@@ -427,6 +427,45 @@ def build_signal_fn(kind: str, params: dict, all_bars: list):
             return None
         return fn
 
+    if kind == 'bollinger_vol':
+        # 볼린저 상/하단 돌파 + 거래량 확인(직전 N봉 평균 대비 배수 이상).
+        # 추세장에서만 터지는 '진짜 돌파'를 거르고 눌림장 가짜돌파를 줄이는 게 목적
+        # (워크포워드상 순수 볼린저 돌파가 눌림국면에서 손실을 낸 약점을 겨냥).
+        period, mult = params['period'], params['mult']
+        vol_mult, vol_period = params['vol_mult'], params['vol_period']
+        mid, upper, lower = bollinger_full_series(closes, period, mult)
+        vol_avg = volume_sma_series(vols, vol_period)
+
+        def fn(i, trend):
+            if i < 1 or upper[i] is None or lower[i-1] is None:
+                return None
+            if vol_avg[i] is None or vol_avg[i] <= 0 or vols[i] < vol_avg[i] * vol_mult:
+                return None
+            if trend == 'UP' and closes[i-1] <= upper[i-1] and closes[i] > upper[i]:
+                return 'L'
+            if trend == 'DOWN' and closes[i-1] >= lower[i-1] and closes[i] < lower[i]:
+                return 'S'
+            return None
+        return fn
+
+    if kind == 'donchian':
+        # 돈치안 채널 돌파: 직전 N봉 최고가 상향 돌파 시 롱 / 최저가 하향 돌파 시 숏.
+        # 표준편차 기반(볼린저)이 아니라 실제 고저 기반이라 변동성 축소구간에서
+        # 밴드가 과도하게 좁아지는 볼린저의 약점이 없다.
+        period = params['period']
+
+        def fn(i, trend):
+            if i < period:
+                return None
+            prior_high = max(highs[i - period:i])
+            prior_low  = min(lows[i - period:i])
+            if trend == 'UP' and closes[i] > prior_high:
+                return 'L'
+            if trend == 'DOWN' and closes[i] < prior_low:
+                return 'S'
+            return None
+        return fn
+
     if kind == 'macd_vol':
         # MACD 크로스 + 거래량 확인 필터 (직전 N봉 평균 대비 배수 이상일 때만 채택)
         fast, slow, sig, vol_mult, vol_period = (

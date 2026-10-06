@@ -177,6 +177,11 @@ def load_state(all_bars, daily) -> dict:
         with open(STATE_PATH, encoding="utf-8") as f:
             state = json.load(f)
         state["benchmark"] = benchmark
+        # phases는 search_phases.py(계획)를 단일 진실원으로 삼는다. 과거엔 상태파일에
+        # 고정 복사돼 있어서, 계획에 새 phase를 추가해도 기존 상태파일이 옛 목록을
+        # 그대로 들고 있어 반영되지 않는 함정이 있었다(2026-10-04). 새 phase는 항상
+        # 기존 phase_index 뒤에 추가하므로, 인덱스를 보존하면 진행 지점이 유지된다.
+        state["phases"] = sp.PHASES
         return state
 
     return {

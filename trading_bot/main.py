@@ -25,6 +25,7 @@ from harness.kiwoom_harness import KiwoomHarness
 from agents.breakout_agent import BreakoutTradingAgent
 from agents.leverage_agent import LeverageInverseAgent
 from agents.personal_invest_agent import PersonalInvestAgent
+from agents.api_usage_agent import ApiUsageAgent
 
 # 로거 초기화
 logger = setup_logger("main")
@@ -117,6 +118,9 @@ class TradingBot:
 
         self.personal_invest_agent = PersonalInvestAgent()
         self.harness.register_agent(self.personal_invest_agent)
+
+        self.api_usage_agent = ApiUsageAgent(self.kiwoom, self.notifier)
+        self.harness.register_agent(self.api_usage_agent)
 
         # 6. 하네스 런타임 공유 컨텍스트 설정
         # ── 오브젝트 참조 ──────────────────────────────────────────────────
@@ -403,13 +407,25 @@ class TradingBot:
         return cond_list[choice - 1]
 
     def _sync_existing_positions(self):
-        # vm_manager가 이미 관리하는 종목은 execution_skill 복구에서 제외
+        # 다른 에이전트가 이미 관리하는 종목은 execution_skill(일반 돌파) 복구에서 제외.
+        # vm_manager뿐 아니라 PersonalInvestAgent 종목도 반드시 제외해야 한다 —
+        # 제외하지 않으면 개별주 계획 포지션이 일반 돌파 전략에 흡수돼 계획 손절가(예:
+        # 실리콘투 33,000원) 대신 일반 전략의 기본 -3% 손절이 붙어 엉뚱하게 청산된다
+        # (실측 2026-10-06: 재시작 후 흡수 → -3% 손절 36,115원 발동 → -94,560원 손실).
         vm_codes = {pos.code for pos in self.vm_manager.get_all().values()}
+        invest_codes = set(self.personal_invest_agent.watched_codes())
+        skip_codes = vm_codes | invest_codes
         positions = self.kiwoom.get_positions()
+
+        # 개별주 유령 포지션 정리 — 외부(다른 에이전트/수동)에서 청산된 종목이
+        # PersonalInvestAgent 상태에 보유로 남아있으면 실계좌 기준으로 제거한다.
+        real_qty = {p["code"]: p["qty"] for p in positions}
+        self.personal_invest_agent.reconcile_with_account(real_qty)
+
         for p in positions:
             code = p["code"]
-            if code in vm_codes:
-                continue  # vm_manager가 이미 관리 중
+            if code in skip_codes:
+                continue  # vm_manager 또는 PersonalInvestAgent가 이미 관리 중
             name = p["name"]
             
             # 1) 포지션 복구
@@ -1179,10 +1195,11 @@ class TradingBot:
             """현재 보유 포지션 상세 조회 (장 외 시간 REST 현재가 사용)"""
             vm_positions = self.vm_manager.get_all()
             gen_positions = self.execution_skill.get_all_positions()
+            invest_positions = self.personal_invest_agent.get_all_positions()
             last_prices  = self.harness.get_context().get("last_prices", {})
             now_str = datetime.now().strftime("%H:%M:%S")
 
-            if not vm_positions and not gen_positions:
+            if not vm_positions and not gen_positions and not invest_positions:
                 lev_pos_chk = getattr(self.leverage_agent, "_position", None)
                 if not lev_pos_chk:
                     return f"📂 보유 포지션 없음 [{now_str}]"
@@ -1269,6 +1286,35 @@ class TradingBot:
                     )
                 lines.append(f"\n  └ 일반 순손익 합계: {gen_unreal:+,.0f}원")
                 total_unreal += gen_unreal
+
+            # ── 개별주 계획매매 포지션 ──────────────────────────────────
+            if invest_positions:
+                lines.append(f"\n📋 <b>개별주 계획매매 ({len(invest_positions)}개)</b>")
+                invest_unreal = 0
+                for code, pos in invest_positions.items():
+                    cur, flu = _get_price(code, pos["entry_price"])
+                    if not cur:
+                        cur = pos["entry_price"]
+                    pnl_pos, rate_pos = _net_pnl(pos["entry_price"], cur, pos["qty"], is_etf=False)
+                    invest_unreal += pnl_pos
+                    emoji = "▲" if pnl_pos >= 0 else "▼"
+                    flu_str = f" {flu:+.2f}%" if flu is not None else ""
+                    lines.append(
+                        f"\n  {emoji} <b>{pos['name']} ({code})</b>\n"
+                        f"    진입: {pos['entry_price']:,}원 | 현재: {cur:,}원{flu_str}\n"
+                        f"    순손익(수수료+세금): {pnl_pos:+,.0f}원 ({rate_pos:+.2%})\n"
+                        f"    수량: {pos['qty']}주 | 목표: {pos['target']:,}원 | 손절: {pos['stop']:,}원"
+                    )
+                lines.append(f"\n  └ 개별주 순손익 합계: {invest_unreal:+,.0f}원")
+                total_unreal += invest_unreal
+
+            invest_plans = self.personal_invest_agent.get_all_plans()
+            if invest_plans:
+                lines.append(f"\n⏳ <b>개별주 매수 대기 중 ({len(invest_plans)}개)</b>")
+                for code, plan in invest_plans.items():
+                    lines.append(
+                        f"  - {plan['name']}({code}) 진입 {plan['entry_min']:,}~{plan['entry_max']:,}원"
+                    )
 
             # ── 삼성전자 롱숏 전략 포지션 ─────────────────────────────
             lev_pos = getattr(self.leverage_agent, "_position", None)
@@ -2118,6 +2164,15 @@ class TradingBot:
 
             return "\n".join(lines)
 
+        def cmd_apiusage(_args):
+            """키움 REST 일일 호출량(1,700회 한도) 조회"""
+            usage = self.kiwoom.get_api_usage()
+            return (
+                f"📡 <b>API 호출량 ({usage['date']})</b>\n"
+                f"{usage['count']} / {usage['limit']}회 사용 ({usage['pct']}%)\n"
+                f"남은 호출: {usage['remaining']}회"
+            )
+
         def cmd_help(_args):
             return (
                 "📖 <b>사용 가능한 명령</b>\n"
@@ -2131,6 +2186,7 @@ class TradingBot:
                 "/movers [N] — 등락률·거래량급증 상위 N개 비교 (기본 50)\n"
                 "/invest 코드 entry=.. target=.. stop=.. — 개별주 계획매매 등록\n"
                 "/invest list|cancel 코드 — 계획 조회/취소\n"
+                "/apilimit — 오늘 API 호출량 조회 (1,700회 한도 중 사용량)\n"
                 "/sell — 전량 강제 청산\n"
                 "/reload — vm_picks.json 강제 재로드\n"
                 "/log — 최근 로그 15줄\n"
@@ -2147,6 +2203,7 @@ class TradingBot:
         n.register_command("strategy", cmd_strategy)
         n.register_command("movers",   cmd_movers)
         n.register_command("invest",   cmd_invest)
+        n.register_command("apilimit", cmd_apiusage)
         n.register_command("sell",     cmd_sell)
         n.register_command("stop",     cmd_stop)
         n.register_command("reload",   cmd_reload)
@@ -2327,6 +2384,21 @@ class TradingBot:
         except Exception as e:
             logger.debug(f"[Bot] heartbeat 파일 쓰기 실패: {e}")
 
+    def _telegram_idle_wait(self, until: datetime):
+        """비거래일(주말/공휴일) 대기 — 텔레그램 명령 응답만 유지하고 매매 로직은 돌리지 않음.
+
+        기존에는 비거래일 전체를 순수 time.sleep()으로 보내 Notifier를 아예 생성하지
+        않았고, 그 결과 주말에는 /help·/pos 등 모든 명령이 응답하지 않았다
+        (실측 2026-10-04 00:11 — Oct3 토요일 진입 직후부터 Oct4 08:50 재확인까지
+        완전 무응답 상태였음).
+        """
+        self.notifier.start_polling()
+        logger.info(f"[Bot] 비거래일 텔레그램 대기 모드 (다음 거래일 확인: {until.strftime('%Y-%m-%d %H:%M')})")
+        while datetime.now() < until:
+            self._stop_event.wait(timeout=60)
+            self.notifier.ensure_polling()
+        self.notifier.stop()
+
     def _vm_telegram_loop(self):
         """
         Kiwoom 없이 동작하는 VM Telegram 감시 루프.
@@ -2498,11 +2570,6 @@ if __name__ == "__main__":
             # holidays 패키지 미설치 시 주말만 제외
             return date.weekday() < 5
 
-    def _sleep_until(target: datetime):
-        delta = (target - datetime.now()).total_seconds()
-        if delta > 0:
-            time.sleep(delta)
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--auto", action="store_true", help="Auto start at 09:00 with default strategy and condition")
     args = parser.parse_args()
@@ -2514,11 +2581,19 @@ if __name__ == "__main__":
                 next_check = datetime.combine(today + timedelta(days=1), datetime.min.time()).replace(hour=8, minute=50)
                 print(f"\n[Bot] 비거래일 ({today}): 주말 또는 공휴일입니다. {next_check.strftime('%m/%d %H:%M')}에 재확인합니다.")
                 logger.info(f"[Bot] 비거래일 ({today}) — {next_check.strftime('%Y-%m-%d %H:%M')}에 재확인")
-                _sleep_until(next_check)
+                # 비거래일에도 텔레그램 명령(/help, /pos 등)은 응답 가능하도록 유지
+                idle_bot = TradingBot(auto_mode=True)
+                idle_bot._telegram_idle_wait(next_check)
                 continue
 
             bot = TradingBot(auto_mode=True)
             bot.start()
+
+            # 텔레그램 폴링 스레드 명시적 종료 — 다음 날 TradingBot()이 새 폴링을
+            # 시작하기 전에 멈추지 않으면 두 스레드가 같은 봇 토큰으로 getUpdates를
+            # 호출해 "Conflict: terminated by other getUpdates request"가 발생하고
+            # 텔레그램 명령 수신이 전부 불안정해진다.
+            bot.notifier.stop()
 
             print("\n[Bot] 오늘 장이 종료되었습니다. 다음 거래일을 위해 자정까지 대기합니다...")
             while True:

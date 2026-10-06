@@ -107,6 +107,20 @@ class BreakoutTradingAgent(BaseAgent):
     def _handle_candle(self, candle, harness, execution, market_data, risk):
         code = candle.code
 
+        # VM picks 종목은 _handle_tick의 VM 전용 라우팅(_handle_vm_tick)에서만 매수/청산을
+        # 담당한다. 이 가드가 없으면 캔들 종가마다 전략의 수동지정(Custom) 매수 조건이
+        # 별도로 평가되어, VM이 지정가 분할매수로 이미 보유 중인 종목을 execution_skill이
+        # 중복으로 또 매수해버린다 — execution.has_position()은 vm_manager가 들고 있는
+        # 포지션을 모르기 때문에 막아주지 못한다. 실측(2026-10-02): 알테오젠(196170)
+        # VM 10주 + 중복매수 11주, LG전자(066570) VM 7주 + 중복매수 14주로 실계좌와
+        # 정확히 일치 — 같은 종목이 두 시스템에 의해 각각 따로 관리되고 있었음.
+        vm_manager  = harness.get_context().get("vm_manager")
+        custom_conf = config.get_custom_targets().get(code)
+        has_vm_pos  = bool(vm_manager and vm_manager.get_by_code(code))
+        vm_enabled  = getattr(config, "VM_PICKS_ENABLED", True)
+        if vm_manager and (has_vm_pos or (vm_enabled and custom_conf)):
+            return
+
         # 매매 시간 체크
         if not self._in_trade_hours():
             return

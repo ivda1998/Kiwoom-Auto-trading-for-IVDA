@@ -78,6 +78,11 @@ class KiwoomAPI:
         self._last_chart_call: float = 0.0
         self._chart_min_interval: float = 2.0   # 최소 2.0초 간격 (429 방지용)
 
+        # ── ka10001 다건 보정조회 전용 스로틀 (거래량급증 실측 보정용) ──
+        # 실측: 0.22초(기본 REST 간격)로는 429 발생, 0.5초도 20% 실패, 1.0초는 무오류(2026-10-02)
+        self._last_quote_call: float = 0.0
+        self._quote_min_interval: float = 1.0
+
         # ── WebSocket ──────────────────────────────────
         self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
         self._ws_thread: Optional[threading.Thread] = None
@@ -273,6 +278,21 @@ class KiwoomAPI:
         logger.error(f"[KiwoomAPI] {api_id} {max(1, max_retries)}회 재시도 후 최종 실패")
         resp.raise_for_status()
         return ({}, "N", "") if return_headers else {}
+
+    def get_api_usage(self) -> dict:
+        """오늘 REST 요청 사용량 (주문 API 제외, _post의 카운터를 그대로 조회).
+
+        반환: {"count", "limit", "remaining", "pct", "date"}
+        """
+        today = datetime.now().date()
+        count = self._rest_call_count if self._rest_call_date == today else 0
+        return {
+            "count":     count,
+            "limit":     self._DAILY_LIMIT,
+            "remaining": max(0, self._DAILY_LIMIT - count),
+            "pct":       round(count / self._DAILY_LIMIT * 100, 1),
+            "date":      str(today),
+        }
 
     # ─────────────────────────────────────────
     # WebSocket 이벤트 루프 스레드
@@ -662,21 +682,30 @@ class KiwoomAPI:
             logger.error(f"[KiwoomAPI] 등락률상위 조회 실패: {e}")
             return []
 
+    _VOLUME_SURGE_ENRICH_CAP = 60  # ka10001 보정 조회 상한 (1초/call 스로틀 적용 시 최대 약 60초)
+
     def get_volume_surge(self, market: str = "000", sort_by: str = "qty",
                           limit: Optional[int] = None) -> list:
         """ka10023 - 거래량급증요청 (전일 거래량 대비 오늘 거래량이 급증한 종목)
 
         market: mrkt_tp — "000"=전체, "001"=코스피, "101"=코스닥
-        sort_by: "qty"=급증수량(sdnin_qty) 내림차순(기본 — 등락률 상위와 겹치는 실질적
-                 급등주를 더 잘 잡음) | "rate"=급증률(sdnin_rt) 내림차순 (저유동성
-                 ETF/ETN 위주로 잡혀 가격 급등과 상관성이 낮음, 실측 2026-09-30 확인)
-        limit: 반환 개수 제한 (None이면 최대 200개, get_top_change_rate와 동일 제약)
+        sort_by: "qty"=급증수량 내림차순(기본) | "rate"=급증률 내림차순
 
-        관리종목/ETF/ETN/1,000원 미만 동전주는 항상 제외(클라이언트 필터, 2026-10-01 —
-        get_top_change_rate와 동일한 사유).
+        ⚠ ka10023 자체의 prev_trde_qty/sdnin_qty/sdnin_rt 필드는 모의투자 환경에서
+        최근 1~2일 급등으로 거래량이 크게 늘어난 종목에 대해 "전일" 기준값이 사실상
+        당일 값과 같아져버리는 버그가 실측으로 확인됨 (2026-10-02, 덕우전자 사례:
+        ka10023이 보고한 prev_trde_qty=3,718,431 ≈ 당일 누적치, 실제 전일(10/1)
+        거래량은 일봉 데이터 기준 543,015 — 약 6.8배 차이). 따라서 ka10023의 수량
+        필드는 종목 발굴(후보 추출)에만 쓰고, 실제 "급증수량/급증률" 표시값은 ka10001
+        (주식기본정보)의 base_pric(전일종가, 검증됨)·trde_pre(전일대비 거래량 증가율%)
+        로 종목별 재계산해 사용한다 — ka10001은 get_daily_data와 달리 차트 API 전용
+        스로틀(2초/call) 대상이 아니라 다건 보정에도 쓸 수 있다.
+
+        관리종목/ETF/ETN/1,000원 미만 동전주는 항상 제외(클라이언트 필터, 2026-10-01).
 
         반환: [{"code","name","current_price","flu_rt","sign",
                 "prev_volume","volume","surge_qty","surge_rate"}, ...]
+        (prev_volume/volume/surge_qty/surge_rate는 모두 ka10001 보정값)
         """
         sort_tp = "1" if sort_by == "qty" else "2"
         try:
@@ -690,22 +719,22 @@ class KiwoomAPI:
                 api_id="ka10023",
             )
             items = data.get("trde_qty_sdnin", [])
-            out = []
+            candidates = []
             for item in items:
                 sig = str(item.get("pred_pre_sig", "")).strip()
                 name = item.get("stk_nm", "")
                 if self._is_etf_etn(name):
                     continue
 
-                def _num(key):
-                    raw = str(item.get(key, "0")).replace(",", "").strip()
+                def _num(key, _item=item):
+                    raw = str(_item.get(key, "0")).replace(",", "").strip()
                     try:
                         return int(raw.lstrip("+-")) * (-1 if raw.startswith("-") else 1)
                     except ValueError:
                         return 0
 
-                def _flt(key):
-                    raw = str(item.get(key, "0")).replace(",", "").strip()
+                def _flt(key, _item=item):
+                    raw = str(_item.get(key, "0")).replace(",", "").strip()
                     try:
                         return float(raw.lstrip("+-")) * (-1 if raw.startswith("-") else 1)
                     except ValueError:
@@ -714,21 +743,82 @@ class KiwoomAPI:
                 if _num("cur_prc") < 1000:
                     continue
 
-                out.append({
+                candidates.append({
                     "code":          item.get("stk_cd", ""),
                     "name":          name,
                     "current_price": _num("cur_prc"),
                     "flu_rt":        _flt("flu_rt"),
                     "sign":          self._PRED_PRE_SIG_LABEL.get(sig, sig),
-                    "prev_volume":   _num("prev_trde_qty"),
-                    "volume":        _num("now_trde_qty"),
-                    "surge_qty":     _num("sdnin_qty"),
-                    "surge_rate":    _flt("sdnin_rt"),
                 })
+
+            # 보정 조회 1초/call 스로틀이라 limit에 맞춰 상한을 늘렸다 줄였다 함
+            # (기본 60건=약 60초, limit=10이면 약 25초로 단축)
+            enrich_n = min(max((limit or 50) + 15, 30), self._VOLUME_SURGE_ENRICH_CAP)
+            out = []
+            for cand in candidates[:enrich_n]:
+                real = self._get_real_volume_surge(cand["code"])
+                if real is None:
+                    continue
+                cand.update(real)
+                out.append(cand)
+
+            out.sort(
+                key=lambda r: r["surge_qty"] if sort_by == "qty" else r["surge_rate"],
+                reverse=True,
+            )
             return out[:limit] if limit else out
         except Exception as e:
             logger.error(f"[KiwoomAPI] 거래량급증 조회 실패: {e}")
             return []
+
+    def _get_real_volume_surge(self, code: str) -> Optional[dict]:
+        """ka10001 기준 실제 전일대비 거래량 증가분 계산.
+
+        trde_pre(전일대비 거래량 증가율 %)는 ka10001이 직접 제공하는 신뢰 가능한
+        값(ka10023의 prev_trde_qty와 달리 실측 검증됨). 이를 거꾸로 풀어
+        prev_volume = trde_qty / (1 + trde_pre/100) 로 전일 거래량을 역산한다.
+        """
+        try:
+            _wait = self._quote_min_interval - (time.time() - self._last_quote_call)
+            if _wait > 0:
+                time.sleep(_wait)
+            self._last_quote_call = time.time()
+
+            data = self._post(
+                "/api/dostk/stkinfo", body={"stk_cd": code}, api_id="ka10001",
+                max_retries=1,
+            )
+
+            def _num(key):
+                raw = str(data.get(key, "0")).replace(",", "").strip()
+                try:
+                    return int(raw.lstrip("+-")) * (-1 if raw.startswith("-") else 1)
+                except ValueError:
+                    return 0
+
+            def _flt(key):
+                raw = str(data.get(key, "0")).replace(",", "").strip()
+                try:
+                    return float(raw.lstrip("+-")) * (-1 if raw.startswith("-") else 1)
+                except ValueError:
+                    return 0.0
+
+            volume  = _num("trde_qty")
+            pre_pct = _flt("trde_pre")
+            if pre_pct <= -100.0:
+                prev_volume = 0
+            else:
+                prev_volume = round(volume / (1 + pre_pct / 100.0))
+            surge_qty = volume - prev_volume
+            return {
+                "prev_volume": prev_volume,
+                "volume":      volume,
+                "surge_qty":   surge_qty,
+                "surge_rate":  round(pre_pct, 2),
+            }
+        except Exception as e:
+            logger.debug(f"[KiwoomAPI] {code} 실제 거래량 증가분 계산 실패: {e}")
+            return None
 
     # ─────────────────────────────────────────
     # 일봉 데이터 - REST
