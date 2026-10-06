@@ -900,12 +900,26 @@ class TradingBot:
                             target_codes + self.personal_invest_agent.watched_codes()
                         ))
 
+                    # ── 폴링 주기 차등화 (API 일일한도 1700 보호, 2026-10-06) ──
+                    # 포지션 보유 종목은 SL/TP 실시간 감시가 필요하므로 짧게(180초),
+                    # 단순 진입 대기 후보는 길게(기본 420초) 폴링해 총 호출수를 줄인다.
+                    # 실측: 감시종목 ~10개를 전부 180초로 돌리면 풀세션(6.5h)에 시세폴링만
+                    # ~1,300콜이라 캔들·잔고와 합쳐 1700 한도를 장중 초과했음.
+                    held_codes = {c for c in target_codes if self.execution_skill.has_position(c)}
+                    held_codes |= {p.code for p in self.vm_manager.get_all().values()}
+                    held_codes |= set(self.personal_invest_agent.get_all_positions().keys())
+                    if hasattr(self, "leverage_agent"):
+                        held_codes |= {self.leverage_agent.LEVERAGE_CODE,
+                                       self.leverage_agent.INVERSE_CODE}
+                    poll_active = getattr(config, "REST_POLL_INTERVAL", 180)
+                    poll_idle   = getattr(config, "REST_POLL_INTERVAL_IDLE", 420)
+
                     for code in target_codes:
                         if code == "005930":
                             continue  # 삼성전자는 하단 ka10080 갱신 블록에서 처리
 
                         last_poll = self._last_sim_poll.get(code, 0.0)
-                        interval  = 180
+                        interval  = poll_active if code in held_codes else poll_idle
 
                         if now_ts - last_poll >= interval:
                             try:

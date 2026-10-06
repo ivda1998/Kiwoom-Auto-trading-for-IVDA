@@ -31,6 +31,11 @@ ACCOUNT_PASSWORD = _os.environ.get("KIWOOM_ACCOUNT_PASSWORD", "")
 IS_SIMULATION = _os.environ.get("IS_SIMULATION", "true").lower() == "true"
 EXCLUDE_SPAC_ETN_ETF = _os.environ.get("EXCLUDE_SPAC_ETN_ETF", "false").lower() == "true"
 
+# REST 시세폴링 주기(초) — 일일 API 한도(1700) 보호용 차등화.
+# 포지션 보유 종목(SL/TP 감시)은 ACTIVE 주기, 단순 진입 대기 후보는 IDLE 주기로 폴링.
+REST_POLL_INTERVAL      = int(_os.environ.get("REST_POLL_INTERVAL",      "180"))
+REST_POLL_INTERVAL_IDLE = int(_os.environ.get("REST_POLL_INTERVAL_IDLE", "420"))
+
 # 모의투자 / 실서버 도메인 자동 선택 (키움 REST API)
 API_BASE_URL = (
     "https://mockapi.kiwoom.com"   # 모의투자
