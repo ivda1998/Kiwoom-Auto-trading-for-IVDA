@@ -566,3 +566,137 @@ def evaluate_candidate(candidate: dict, all_bars: list, daily: list):
     out['holdout'] = trade_stats([t for t in res['trades'] if str(t['d']) >= HOLDOUT_START])
     out['regimes'] = regime_stats(res['trades'], regime_boundaries(all_bars))
     return out
+
+
+# ─────────────────────────────────────────
+# 지수 레버리지(dual-ETF) 현실 백테스트 — 삼성 대칭 2x 모델과 분리
+#   삼성 simulate()는 005930에 sign×ret×2 대칭모델이라 숏을 낙관한다
+#   (실측 252670 상관 −0.776, 슬리피지로 엣지 증발). 지수는 신호를 롱 ETF(122630)에서
+#   만들되, 롱은 122630·숏은 114800 '실제 ETF 시세 ×1'로 각각 체결하고 KRX 틱
+#   슬리피지를 반영한다(scratchpad index_sim/part3_full의 simulate_real 정식 편입).
+# ─────────────────────────────────────────
+
+def detect_tick(path_3min: str) -> int:
+    """CSV 전 구간 OHLC에서 관측된 최소 가격증분 = 실제 호가단위(원).
+    ETF 호가단위는 주식 스케줄과 달라(저가 ETF는 1~5원) 종목별 실측이 정확하다 —
+    지수 전략 분석 전체가 이 실측틱 기반(scratchpad index_sim.detect_tick)이라 일치시킨다."""
+    vals = set()
+    with open(path_3min, encoding='utf-8') as f:
+        for r in csv.DictReader(f):
+            for k in ('open', 'high', 'low', 'close'):
+                try:
+                    vals.add(int(float(r[k])))
+                except (ValueError, KeyError):
+                    pass
+    vals = sorted(vals)
+    diffs = sorted({b - a for a, b in zip(vals, vals[1:]) if b - a > 0})
+    return diffs[0] if diffs else 1
+
+
+def load_short_lookup(path_3min: str) -> dict:
+    """숏 ETF(예: 114800) 3분봉 CSV를 dt→{low,high,close} 딕셔너리로 로드.
+    롱 ETF 봉의 'dt'로 조회해 숏 레그 체결가를 맞춘다."""
+    out = {}
+    with open(path_3min, encoding='utf-8') as f:
+        for r in csv.DictReader(f):
+            try:
+                dt = datetime.strptime(r['datetime'][:14], '%Y%m%d%H%M%S')
+            except (ValueError, KeyError):
+                continue
+            out[dt] = {'low': int(r['low']), 'high': int(r['high']), 'close': int(r['close'])}
+    return out
+
+
+def simulate_index(long_bars, short_lookup, trend_lookup, signal_fn,
+                   sl=0.025, trail_gap=0.015, entry_start='09:30', force_exit='1520',
+                   cooldown_bars=1, slip_ticks=0.5, long_tick=5, short_tick=5, fee=FEE,
+                   leg_mode='longshort'):
+    """지수 dual-ETF 현실모델. signal_fn(i, trend)->'L'/'S'/None (신호원=long_bars=122630).
+      롱('L') → long_bars 자기 시세로 진입/청산 (ETF가 2x 내장, ×1 체결)
+      숏('S') → short_lookup[dt] 시세로 진입/청산 (ETF가 1x인버스 내장, ×1 체결)
+    청산: 손절(진입가 -sl)·단일단계 트레일(peak≥sl 후 peak-cur≥trail_gap)·EOD. 방향 무관
+    (둘 다 '매수'라 보유 ETF 상승이 favorable). 슬리피지=slip_ticks틱/측(진입+청산),
+    틱은 종목별 실측치(long_tick/short_tick, detect_tick으로 구함)."""
+    trades = []
+    pos = None
+    last_exit_idx = -999
+    es = entry_start.replace(':', '')
+
+    for i, bar in enumerate(long_bars):
+        d, t, dt = bar['d'], bar['t'], bar['dt']
+
+        if pos:
+            xbar = bar if pos['dir'] == 'L' else short_lookup.get(dt)
+            if xbar is not None:
+                ep = pos['p']
+                exitpx = None
+                if i > pos['ei']:
+                    lo = (xbar['low'] - ep) / ep
+                    hi = (xbar['high'] - ep) / ep
+                    pos['peak'] = max(pos['peak'], hi)
+                    if lo <= -sl:
+                        exitpx = ep * (1 - sl)
+                    elif trail_gap and pos['peak'] >= sl:
+                        cur = (xbar['close'] - ep) / ep
+                        if (pos['peak'] - cur) >= trail_gap:
+                            exitpx = xbar['close']
+                if exitpx is None and t >= force_exit:
+                    exitpx = xbar['close']
+                if exitpx is not None:
+                    tk = long_tick if pos['dir'] == 'L' else short_tick
+                    slip = slip_ticks * tk * (1 / ep + 1 / max(exitpx, 1e-9))
+                    ret = (exitpx - ep) / ep - fee - slip
+                    trades.append({'d': d, 'ret': ret, 'r': 'EXIT', 'dir': pos['dir']})
+                    pos = None
+                    last_exit_idx = i
+                    continue
+
+        if not pos and es <= t <= '1500' and (i - last_exit_idx) > cooldown_bars:
+            trend = trend_lookup(d)
+            if trend:
+                sig_dir = signal_fn(i, trend)
+                if sig_dir == 'S' and leg_mode == 'longonly':
+                    sig_dir = None   # 롱온리: 숏 신호 무시
+                if sig_dir == 'S':
+                    ib = short_lookup.get(dt)
+                    if ib is not None:
+                        pos = {'dir': 'S', 'p': ib['close'], 'ei': i, 'peak': 0.0}
+                elif sig_dir == 'L':
+                    pos = {'dir': 'L', 'p': bar['close'], 'ei': i, 'peak': 0.0}
+
+    if pos:
+        ep = pos['p']
+        xbar = long_bars[-1] if pos['dir'] == 'L' else short_lookup.get(long_bars[-1]['dt'])
+        if xbar is not None:
+            exitpx = xbar['close']
+            tk = long_tick if pos['dir'] == 'L' else short_tick
+            slip = slip_ticks * tk * (1 / ep + 1 / max(exitpx, 1e-9))
+            trades.append({'d': long_bars[-1]['d'],
+                           'ret': (exitpx - ep) / ep - fee - slip, 'r': 'EOD', 'dir': pos['dir']})
+
+    return {'trades': trades}
+
+
+def evaluate_index_candidate(candidate: dict, long_bars: list, short_lookup: dict, daily: list,
+                             long_tick: int = 5, short_tick: int = 5):
+    """지수 후보 평가 — evaluate_candidate의 dual-ETF 버전.
+    전구간 통계 + holdout + regimes + 레그별(long/short) 분해를 반환.
+    long_tick/short_tick은 detect_tick으로 구한 종목별 실측 호가단위."""
+    trend_lookup = make_trend_lookup(daily, candidate.get('fast_ma', 10), candidate.get('slow_ma', 20))
+    signal_fn = build_signal_fn(candidate['kind'], candidate['params'], long_bars)
+    res = simulate_index(
+        long_bars, short_lookup, trend_lookup, signal_fn,
+        sl=candidate.get('sl', 0.025),
+        trail_gap=candidate.get('trail_gap', 0.015),
+        entry_start=candidate.get('entry_start', '09:30'),
+        slip_ticks=candidate.get('slip_ticks', 0.5),
+        long_tick=long_tick, short_tick=short_tick,
+        leg_mode=candidate.get('leg_mode', 'longshort'),
+    )
+    trades = res['trades']
+    out = trade_stats(trades)
+    out['holdout'] = trade_stats([t for t in trades if str(t['d']) >= HOLDOUT_START])
+    out['regimes'] = regime_stats(trades, regime_boundaries(long_bars))
+    out['long'] = trade_stats([t for t in trades if t['dir'] == 'L'])
+    out['short'] = trade_stats([t for t in trades if t['dir'] == 'S'])
+    return out
