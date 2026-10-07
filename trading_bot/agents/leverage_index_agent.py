@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Optional
@@ -48,6 +50,13 @@ class LeverageIndexAgent(BaseAgent):
         self._force_exited_today = False
         self._last_exit_time: Optional[datetime] = None
         self._daily_trend_cache: dict = {}
+        # ── 가드레일 상태(서킷브레이커) ──
+        self._day_realized_pnl = 0.0          # 당일 실현손익 누계(원)
+        self._consec_losses    = 0            # 연속 손절 횟수
+        self._halted_reason: Optional[str] = None  # None이면 정상, 문자열이면 당일 신규진입 중단
+        self._floor_warned_date: Optional[str] = None
+        self._halt_state_path = os.path.join(os.path.dirname(config.DB_PATH), "leverage_index_halt.json")
+        self._load_halt_state()
 
     @property
     def LEVERAGE_CODE(self) -> str:   # 롱 ETF (= 신호원)
@@ -106,14 +115,55 @@ class LeverageIndexAgent(BaseAgent):
         if not (entry_start <= now_hm <= entry_end):
             return
 
+        # 가드레일 발동 시 당일 신규진입 차단 (기존 포지션 청산은 TICK/EOD에서 계속)
+        if self._halted_reason:
+            return
+
         # 청산 직후 1봉 쿨다운 (연속 전환 방지)
         cooldown_sec = getattr(config, "LEVERAGE_INDEX_CANDLE_INTERVAL", 3) * 60
         if self._last_exit_time and (datetime.now() - self._last_exit_time).total_seconds() < cooldown_sec:
             return
 
         direction = self._calc_signal_bollinger(candles, harness)
-        if direction:
-            self._enter(direction, context)
+        if not direction:
+            return
+
+        # 숏 가격 하한 가드: 인버스 ETF 가격이 바닥이면 슬리피지가 엣지를 삼킴(액면병합 위험)
+        if direction == "INVERSE" and not self._short_price_ok(harness, context):
+            return
+
+        self._enter(direction, context)
+
+    def _short_price_ok(self, harness, context) -> bool:
+        floor = getattr(config, "LEVERAGE_INDEX_SHORT_PRICE_FLOOR", 0)
+        if not floor:
+            return True
+        price = self._last_etf_price.get(self.INVERSE_CODE, 0)
+        if price <= 0:
+            try:
+                info  = harness.kiwoom.get_stock_info(self.INVERSE_CODE)
+                price = info.get("current_price", 0)
+            except Exception:
+                price = 0
+        if price <= 0:
+            logger.warning(f"[LeverageIndexAgent] 숏 {self.INVERSE_CODE} 현재가 미확인 → 숏 진입 보류")
+            return False
+        if price < floor:
+            today = datetime.now().strftime("%Y-%m-%d")
+            if self._floor_warned_date != today:
+                self._floor_warned_date = today
+                msg = (f"[LeverageIndexAgent] ⚠️ 숏 가드: {self.INVERSE_CODE} 가격 {price:,}원 "
+                       f"< 하한 {floor:,}원 → 숏 진입 당일 차단(슬리피지/액면병합)")
+                logger.warning(msg)
+                notifier = harness.get_context().get("notifier")
+                if notifier:
+                    notifier.send(
+                        f"⚠️ <b>지수 전략 숏 진입 차단</b>\n"
+                        f"{self.INVERSE_CODE} 가격 {price:,}원 < 하한 {floor:,}원\n"
+                        f"저가 구간 슬리피지/액면병합 위험 → 숏만 보류(롱은 정상)"
+                    )
+            return False
+        return True
 
     # ─────────────────────────────────────────
     # 신호 계산 — 일봉추세 + 3분봉 볼린저 돌파
@@ -298,6 +348,12 @@ class LeverageIndexAgent(BaseAgent):
         self._position = None
         self._last_exit_time = datetime.now()
 
+        # ── 가드레일 집계 ──
+        self._day_realized_pnl += pnl
+        self._consec_losses = self._consec_losses + 1 if pnl < 0 else 0
+        self._evaluate_guardrails(harness)
+        self._save_halt_state()
+
         logger.info(
             f"[LeverageIndexAgent] 청산({reason}): {etf_name}({etf_code}) "
             f"{qty}주 @ {exit_price:,}원 | PnL {pnl:+,.0f}원 ({pnl_rate:+.2%}) | ord={ord_no}"
@@ -352,10 +408,76 @@ class LeverageIndexAgent(BaseAgent):
             self._force_exited_today = True
 
     # ─────────────────────────────────────────
+    # 가드레일(서킷브레이커)
+    # ─────────────────────────────────────────
+    def _evaluate_guardrails(self, harness):
+        """청산 직후 호출. 손실한도/연속손절 위반 시 당일 신규진입 중단 플래그 설정."""
+        if self._halted_reason:
+            return
+        limit = getattr(config, "LEVERAGE_INDEX_DAILY_LOSS_LIMIT", 0)
+        maxc  = getattr(config, "LEVERAGE_INDEX_MAX_CONSEC_LOSS", 0)
+        reason = None
+        if limit and self._day_realized_pnl <= -abs(limit):
+            reason = f"일일손실한도 초과 (당일 {self._day_realized_pnl:+,.0f}원 ≤ -{abs(limit):,}원)"
+        elif maxc and self._consec_losses >= maxc:
+            reason = f"연속손절 {self._consec_losses}회 (한도 {maxc}회)"
+        if not reason:
+            return
+        self._halted_reason = reason
+        logger.warning(f"[LeverageIndexAgent] 🛑 가드레일 발동 → 당일 신규진입 중단: {reason}")
+        notifier = harness.get_context().get("notifier") if harness else None
+        if notifier:
+            notifier.send(
+                f"🛑 <b>지수 레버리지 전략 당일 중단</b>\n"
+                f"사유: {reason}\n"
+                f"당일 실현손익: {self._day_realized_pnl:+,.0f}원\n"
+                f"※ 신규진입만 차단 — 기존 포지션은 정상 청산. 내일 자동 해제."
+            )
+
+    def _load_halt_state(self):
+        """재시작 시 당일 정지상태 복원 — 서킷브레이커가 재시작으로 우회되지 않게."""
+        try:
+            with open(self._halt_state_path, encoding="utf-8") as f:
+                st = json.load(f)
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            logger.warning(f"[LeverageIndexAgent] 가드레일 상태 로드 실패: {e}")
+            return
+        if st.get("date") != datetime.now().strftime("%Y-%m-%d"):
+            return  # 날짜 바뀜 → 무시(자동 해제)
+        self._day_realized_pnl = st.get("pnl", 0.0)
+        self._consec_losses    = st.get("consec", 0)
+        self._halted_reason    = st.get("reason")
+        if self._halted_reason:
+            logger.warning(
+                f"[LeverageIndexAgent] 당일 가드레일 정지상태 복원: {self._halted_reason} "
+                f"(실현손익 {self._day_realized_pnl:+,.0f}원, 연속손절 {self._consec_losses}회)"
+            )
+
+    def _save_halt_state(self):
+        try:
+            os.makedirs(os.path.dirname(self._halt_state_path), exist_ok=True)
+            with open(self._halt_state_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "date":   datetime.now().strftime("%Y-%m-%d"),
+                    "pnl":    self._day_realized_pnl,
+                    "consec": self._consec_losses,
+                    "reason": self._halted_reason,
+                }, f, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"[LeverageIndexAgent] 가드레일 상태 저장 실패: {e}")
+
+    # ─────────────────────────────────────────
     # 일일 초기화
     # ─────────────────────────────────────────
     def reset_daily(self):
         self._force_exited_today = False
+        self._day_realized_pnl = 0.0
+        self._consec_losses    = 0
+        self._halted_reason    = None
+        self._floor_warned_date = None
+        self._save_halt_state()
         if self._position:
             logger.warning(
                 f"[LeverageIndexAgent] 일일 초기화 시 잔여 포지션 발견: "

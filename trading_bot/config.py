@@ -349,6 +349,12 @@ LEVERAGE_INDEX_CANDLE_INTERVAL = int(_os.environ.get("LEVERAGE_INDEX_CANDLE_INTE
 LEVERAGE_INDEX_ENTRY_START   = _os.environ.get("LEVERAGE_INDEX_ENTRY_START", "09:30")       # 진입 시작
 LEVERAGE_INDEX_ENTRY_END     = _os.environ.get("LEVERAGE_INDEX_ENTRY_END", "15:00")
 LEVERAGE_INDEX_FORCE_EXIT    = _os.environ.get("LEVERAGE_INDEX_FORCE_EXIT", "15:20")
+# ── 가드레일(Phase2 서킷브레이커) — 0이면 해당 항목 비활성 ──
+#   손실한도·연속손절은 "당일 신규진입만" 차단(기존 포지션은 SL/트레일/EOD 정상 청산).
+#   정지상태는 data/leverage_index_halt.json에 영속 → 재시작으로 우회 불가, 날짜 바뀌면 자동 해제.
+LEVERAGE_INDEX_DAILY_LOSS_LIMIT  = int(_os.environ.get("LEVERAGE_INDEX_DAILY_LOSS_LIMIT", "100000"))  # 당일 실현손익 누계 ≤ -이값(원)이면 당일 진입중단
+LEVERAGE_INDEX_MAX_CONSEC_LOSS   = int(_os.environ.get("LEVERAGE_INDEX_MAX_CONSEC_LOSS", "3"))        # 연속 손절 N회 → 당일 진입중단
+LEVERAGE_INDEX_SHORT_PRICE_FLOOR = int(_os.environ.get("LEVERAGE_INDEX_SHORT_PRICE_FLOOR", "400"))    # 숏 ETF 가격 < 이값(원)이면 숏 진입중단(슬리피지/액면병합 방어)
 
 # ─────────────────────────────────────────
 # 개별주 계획매매 (PersonalInvestAgent) — /invest 명령으로 진입가/목표가/손절가 등록

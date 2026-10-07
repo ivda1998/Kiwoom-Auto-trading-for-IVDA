@@ -2325,10 +2325,25 @@ class TradingBot:
                 f"진입 {config.LEVERAGE_INDEX_ENTRY_START}~{config.LEVERAGE_INDEX_ENTRY_END} | "
                 f"SL {config.LEVERAGE_INDEX_SL_RATE:.1%}·트레일 {config.LEVERAGE_INDEX_TRAIL_GAP:.1%}"
             )
+            # ── 가드레일(서킷브레이커) 상태 ──
+            halt   = getattr(ag, "_halted_reason", None)
+            day_pnl = getattr(ag, "_day_realized_pnl", 0.0)
+            consec  = getattr(ag, "_consec_losses", 0)
+            loss_limit = getattr(config, "LEVERAGE_INDEX_DAILY_LOSS_LIMIT", 0)
+            maxc       = getattr(config, "LEVERAGE_INDEX_MAX_CONSEC_LOSS", 0)
+            floor      = getattr(config, "LEVERAGE_INDEX_SHORT_PRICE_FLOOR", 0)
+            if halt:
+                lines.append(f"\n🛑 <b>당일 진입중단</b>: {halt}")
+            else:
+                lines.append(
+                    f"\n🛡 가드레일: 당일손익 {day_pnl:+,.0f}원 / 연속손절 {consec}회"
+                    f" | 한도 -{loss_limit:,}원·{maxc}회·숏하한 {floor:,}원"
+                )
+
             if exited:
-                lines.append("\n🔴 오늘 강제청산 완료 (재진입 없음)")
+                lines.append("🔴 오늘 강제청산 완료 (재진입 없음)")
             elif not pos:
-                lines.append("\n🟡 포지션 없음 — 신호 대기 중")
+                lines.append("🟡 포지션 없음 — 신호 대기 중")
             else:
                 last_prices = self.harness.get_context().get("last_prices", {})
                 cur = last_prices.get(pos["code"], pos["entry_price"])
@@ -2379,8 +2394,8 @@ class TradingBot:
                     lines.append(f"볼린저({period}/{mult}): 중심{mid:,.0f} 상단{upper:,.0f} 하단{lower:,.0f}")
                     long_ok  = trend == "UP" and last.close > upper
                     short_ok = trend == "DOWN" and last.close < lower
-                    lines.append(f"🟢 롱조건(상승추세+상단돌파→122630): {'✅ 충족' if long_ok else '❌ 미충족'}")
-                    lines.append(f"🔴 숏조건(하락추세+하단돌파→252670): {'✅ 충족' if short_ok else '❌ 미충족'}")
+                    lines.append(f"🟢 롱조건(상승추세+상단돌파→{ag.LEVERAGE_CODE}): {'✅ 충족' if long_ok else '❌ 미충족'}")
+                    lines.append(f"🔴 숏조건(하락추세+하단돌파→{ag.INVERSE_CODE}): {'✅ 충족' if short_ok else '❌ 미충족'}")
             except Exception as e:
                 lines.append(f"신호 분석 실패: {e}")
             return "\n".join(lines)
