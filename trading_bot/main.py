@@ -1302,7 +1302,8 @@ class TradingBot:
 
             if not vm_positions and not gen_positions and not invest_positions:
                 lev_pos_chk = getattr(self.leverage_agent, "_position", None)
-                if not lev_pos_chk:
+                idx_pos_chk = getattr(getattr(self, "leverage_index_agent", None), "_position", None)
+                if not lev_pos_chk and not idx_pos_chk:
                     return f"📂 보유 포지션 없음 [{now_str}]"
 
             def _get_price(code, fallback):
@@ -1437,6 +1438,28 @@ class TradingBot:
                     f"    진입: {lev_pos['entry_price']:,}원 | 현재: {cur_lev:,}원{flu_str}\n"
                     f"    순손익(수수료): {pnl_lev:+,.0f}원 ({rate_lev:+.2%})\n"
                     f"    수량: {lev_pos['qty']}주 | SL: {lev_pos['stop_loss']:,}원 | TP: {lev_pos['take_profit']:,}원"
+                )
+
+            # ── 지수 롱숏 전략 포지션 (LeverageIndexAgent) ────────────
+            idx_agent = getattr(self, "leverage_index_agent", None)
+            idx_pos = getattr(idx_agent, "_position", None) if idx_agent else None
+            if idx_pos:
+                etf_code = idx_pos["code"]
+                cur_idx, flu_idx = _get_price(etf_code, idx_pos["entry_price"])
+                if not cur_idx:
+                    cur_idx = idx_pos["entry_price"]
+                pnl_idx, rate_idx = _net_pnl(idx_pos["entry_price"], cur_idx, idx_pos["qty"], is_etf=True)
+                total_unreal += pnl_idx
+                emoji = "▲" if pnl_idx >= 0 else "▼"
+                dir_label = "레버리지(롱)" if idx_pos["direction"] == "LEVERAGE" else "인버스2X(숏)"
+                flu_str = f" {flu_idx:+.2f}%" if flu_idx is not None else ""
+                peak = idx_pos.get("peak_ret", 0.0)
+                lines.append(
+                    f"\n📈 <b>지수 롱숏 전략</b>\n"
+                    f"  {emoji} <b>{idx_pos['name']} ({etf_code})</b> [{dir_label}]\n"
+                    f"    진입: {idx_pos['entry_price']:,}원 | 현재: {cur_idx:,}원{flu_str}\n"
+                    f"    순손익(수수료): {pnl_idx:+,.0f}원 ({rate_idx:+.2%})\n"
+                    f"    수량: {idx_pos['qty']}주 | SL: {idx_pos['stop_loss']:,}원 | 피크수익: {peak:+.2%}"
                 )
 
             lines.append(f"\n💰 <b>순손익 총합(수수료·세금 반영): {total_unreal:+,.0f}원</b>")
@@ -2274,13 +2297,71 @@ class TradingBot:
                 f"남은 호출: {usage['remaining']}회"
             )
 
+        def cmd_levidx(args):
+            """지수 레버리지 전략(LeverageIndexAgent) 현황 / 강제청산"""
+            ag = getattr(self, "leverage_index_agent", None)
+            if ag is None:
+                return "📈 지수 레버리지 전략: 미등록"
+            enabled = getattr(config, "LEVERAGE_INDEX_ENABLED", False)
+            now_str = datetime.now().strftime("%H:%M:%S")
+            pos     = getattr(ag, "_position", None)
+            exited  = getattr(ag, "_force_exited_today", False)
+            parts   = args.strip().split()
+
+            if parts and parts[0].lower() == "exit":
+                if not pos:
+                    return "📈 지수 레버리지 전략: 보유 포지션 없음"
+                ctx = self.harness.get_context()
+                ctx["harness"] = self.harness
+                ag._exit("텔레그램강제청산", 0, ctx)
+                return "✅ 지수 레버리지 포지션 강제 청산 요청 완료"
+
+            lines = [f"📈 <b>지수 롱숏 전략 [{now_str}]</b>"]
+            lines.append(
+                f"활성: {'🟢 ON' if enabled else '🔴 OFF'} | "
+                f"롱 {ag.LEVERAGE_CODE} / 숏 {ag.INVERSE_CODE}\n"
+                f"BB{config.LEVERAGE_INDEX_BB_PERIOD}/{config.LEVERAGE_INDEX_BB_MULT} "
+                f"MA{config.LEVERAGE_INDEX_TREND_FAST_MA}-{config.LEVERAGE_INDEX_TREND_SLOW_MA} | "
+                f"진입 {config.LEVERAGE_INDEX_ENTRY_START}~{config.LEVERAGE_INDEX_ENTRY_END} | "
+                f"SL {config.LEVERAGE_INDEX_SL_RATE:.1%}·트레일 {config.LEVERAGE_INDEX_TRAIL_GAP:.1%}"
+            )
+            if exited:
+                lines.append("\n🔴 오늘 강제청산 완료 (재진입 없음)")
+            elif not pos:
+                lines.append("\n🟡 포지션 없음 — 신호 대기 중")
+            else:
+                last_prices = self.harness.get_context().get("last_prices", {})
+                cur = last_prices.get(pos["code"], pos["entry_price"])
+                pnl_rate = (cur - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] else 0
+                pnl_amt  = (cur - pos["entry_price"]) * pos["qty"]
+                emoji    = "▲" if pnl_amt >= 0 else "▼"
+                dir_lbl  = "레버리지(롱)" if pos["direction"] == "LEVERAGE" else "인버스2X(숏)"
+                lines += [
+                    f"\n{emoji} <b>{pos['name']} ({pos['code']})</b> [{dir_lbl}]",
+                    f"수량: {pos['qty']}주 | 진입: {pos['entry_price']:,}원 | 현재: {cur:,}원",
+                    f"평가손익: {pnl_amt:+,.0f}원 ({pnl_rate:+.2%}) | 피크수익: {pos.get('peak_ret',0.0):+.2%}",
+                    f"SL: {pos['stop_loss']:,}원 | 진입시각: {pos.get('entered_at','?')[:19]}",
+                ]
+            # 신호원 분봉 수
+            try:
+                market_data = self.harness.skills.get("market_data")
+                candles = market_data.get_candles(ag.SIGNAL_CODE) if market_data else []
+                closed  = [c for c in candles if c.is_closed]
+                sig_price = self.harness.get_context().get("last_prices", {}).get(ag.LEVERAGE_CODE, 0)
+                lines.append(f"\n📊 신호원 {ag.SIGNAL_CODE} 확정봉 {len(closed)}개"
+                             + (f" | 현재가 {sig_price:,}원" if sig_price else ""))
+            except Exception:
+                pass
+            return "\n".join(lines)
+
         def cmd_help(_args):
             return (
                 "📖 <b>사용 가능한 명령</b>\n"
                 "/ping — 봇 응답 확인\n"
                 "/status — 오늘 손익·대기 현황\n"
                 "/pos — 보유 포지션 상세 (장 외 시간 가능)\n"
-                "/lev — 레버리지 전략 현황 (/lev exit 강제청산)\n"
+                "/lev — 삼성 레버리지 전략 현황 (/lev exit 강제청산)\n"
+                "/levidx — 지수 레버리지 전략 현황 (/levidx exit 강제청산)\n"
                 "/validate — vm_picks.json 품질 검증\n"
                 "/picks — VM picks 종목·가격 현황\n"
                 "/strategy — 3전략 토글·금액 조회/변경\n"
@@ -2299,6 +2380,7 @@ class TradingBot:
         n.register_command("status",   cmd_status)
         n.register_command("pos",      cmd_pos)
         n.register_command("lev",      cmd_lev)
+        n.register_command("levidx",   cmd_levidx)
         n.register_command("picks",    cmd_picks)
         n.register_command("validate", cmd_validate)
         n.register_command("strategy", cmd_strategy)
@@ -2384,6 +2466,19 @@ class TradingBot:
                 f"\n⚡ <b>레버리지</b> {lev_pos['name']}({dir_lbl}) "
                 f"{lev_pos['qty']}주 {rate_lev:+.2%} | /lev 상세"
             )
+        # 지수 레버리지 전략 요약
+        idx_agent = getattr(self, "leverage_index_agent", None)
+        idx_pos = getattr(idx_agent, "_position", None) if idx_agent else None
+        if idx_pos:
+            cur_idx = last_prices.get(idx_pos["code"], idx_pos["entry_price"])
+            rate_idx = (cur_idx - idx_pos["entry_price"]) / idx_pos["entry_price"] if idx_pos["entry_price"] else 0
+            dir_lbl2 = "롱" if idx_pos["direction"] == "LEVERAGE" else "숏"
+            lines.append(
+                f"\n📈 <b>지수레버리지</b> {idx_pos['name']}({dir_lbl2}) "
+                f"{idx_pos['qty']}주 {rate_idx:+.2%} | /levidx 상세"
+            )
+        elif idx_agent and getattr(config, "LEVERAGE_INDEX_ENABLED", False):
+            lines.append("\n📈 <b>지수레버리지</b> 🟡 신호대기 | /levidx 상세")
         return "\n".join(lines)
 
     # ─────────────────────────────────────────
