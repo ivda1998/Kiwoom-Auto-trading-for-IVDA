@@ -331,6 +331,26 @@ LEVERAGE_BB_PERIOD    = int(_os.environ.get("LEVERAGE_BB_PERIOD", "29"))     # �
 LEVERAGE_BB_MULT      = float(_os.environ.get("LEVERAGE_BB_MULT", "0.8"))    # 볼린저밴드 표준편차 승수
 
 # ─────────────────────────────────────────
+# 지수 레버리지 전략 (LeverageIndexAgent) — 삼성 레버리지의 KOSPI200 지수 2x 버전
+# 2026-10-07 백테스트/워크포워드 검증 "안정형" 구성. 삼성 전략과 병행(독립) 운용.
+# 기본 비활성(LEVERAGE_INDEX_ENABLED=false) — 승인/배포 시 .env에서 켠다.
+# ─────────────────────────────────────────
+LEVERAGE_INDEX_ENABLED       = _os.environ.get("LEVERAGE_INDEX_ENABLED", "false").lower() == "true"
+LEVERAGE_INDEX_LEV_CODE      = _os.environ.get("LEVERAGE_INDEX_LEV_CODE", "122630")   # KODEX 레버리지(롱=신호원)
+LEVERAGE_INDEX_INV_CODE      = _os.environ.get("LEVERAGE_INDEX_INV_CODE", "252670")   # KODEX 200선물인버스2X(숏)
+LEVERAGE_INDEX_AMOUNT        = int(_os.environ.get("LEVERAGE_INDEX_AMOUNT", "2000000"))  # 회당 투자금(삼성과 분리)
+LEVERAGE_INDEX_BB_PERIOD     = int(_os.environ.get("LEVERAGE_INDEX_BB_PERIOD", "29"))    # 볼린저 기간(봉수)
+LEVERAGE_INDEX_BB_MULT       = float(_os.environ.get("LEVERAGE_INDEX_BB_MULT", "1.0"))   # 볼린저 승수(지수는 저변동→0.8보다 넓게)
+LEVERAGE_INDEX_TREND_FAST_MA = int(_os.environ.get("LEVERAGE_INDEX_TREND_FAST_MA", "10"))  # 일봉 추세 단기MA
+LEVERAGE_INDEX_TREND_SLOW_MA = int(_os.environ.get("LEVERAGE_INDEX_TREND_SLOW_MA", "20"))  # 일봉 추세 장기MA
+LEVERAGE_INDEX_SL_RATE       = float(_os.environ.get("LEVERAGE_INDEX_SL_RATE", "0.025"))   # 손절 -2.5%(+트레일 활성 임계)
+LEVERAGE_INDEX_TRAIL_GAP     = float(_os.environ.get("LEVERAGE_INDEX_TRAIL_GAP", "0.015"))  # 트레일링 폭 1.5%(단일단계)
+LEVERAGE_INDEX_CANDLE_INTERVAL = int(_os.environ.get("LEVERAGE_INDEX_CANDLE_INTERVAL", "3"))  # 신호 분봉 주기(분)
+LEVERAGE_INDEX_ENTRY_START   = _os.environ.get("LEVERAGE_INDEX_ENTRY_START", "09:30")       # 진입 시작
+LEVERAGE_INDEX_ENTRY_END     = _os.environ.get("LEVERAGE_INDEX_ENTRY_END", "15:00")
+LEVERAGE_INDEX_FORCE_EXIT    = _os.environ.get("LEVERAGE_INDEX_FORCE_EXIT", "15:20")
+
+# ─────────────────────────────────────────
 # 개별주 계획매매 (PersonalInvestAgent) — /invest 명령으로 진입가/목표가/손절가 등록
 # ─────────────────────────────────────────
 PERSONAL_INVEST_AMOUNT = int(_os.environ.get("PERSONAL_INVEST_AMOUNT", "3000000"))  # 회당 투자금(기본)

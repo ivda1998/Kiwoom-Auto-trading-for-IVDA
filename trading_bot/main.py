@@ -24,6 +24,7 @@ from hooks.market_filter_hook import MarketFilterHook
 from harness.kiwoom_harness import KiwoomHarness
 from agents.breakout_agent import BreakoutTradingAgent
 from agents.leverage_agent import LeverageInverseAgent
+from agents.leverage_index_agent import LeverageIndexAgent
 from agents.personal_invest_agent import PersonalInvestAgent
 from agents.api_usage_agent import ApiUsageAgent
 
@@ -115,6 +116,9 @@ class TradingBot:
 
         self.leverage_agent = LeverageInverseAgent()
         self.harness.register_agent(self.leverage_agent)
+
+        self.leverage_index_agent = LeverageIndexAgent()
+        self.harness.register_agent(self.leverage_index_agent)
 
         self.personal_invest_agent = PersonalInvestAgent()
         self.harness.register_agent(self.personal_invest_agent)
@@ -239,6 +243,7 @@ class TradingBot:
 
         # 레버리지-인버스 전략: 삼성전자 + ETF 구독
         self._init_leverage_strategy()
+        self._init_leverage_index_strategy()
 
         # 후보 종목 초기 스캔 (일봉 기준)
         self._run_initial_scan()
@@ -280,6 +285,39 @@ class TradingBot:
         logger.info(
             f"[Bot] 레버리지 전략 초기화: 삼성({samsung}, {lev_interval}분봉) "
             f"레버리지({lev}) 인버스({inv})"
+        )
+
+    # ─────────────────────────────────────────
+    # 지수 레버리지 전략 초기화 (LeverageIndexAgent) — 삼성과 병행, 기본 비활성
+    # ─────────────────────────────────────────
+    def _init_leverage_index_strategy(self):
+        if not getattr(config, "LEVERAGE_INDEX_ENABLED", False):
+            logger.info("[Bot] 지수 레버리지 전략 비활성 (LEVERAGE_INDEX_ENABLED=false)")
+            return
+
+        ag  = self.leverage_index_agent
+        lev = ag.LEVERAGE_CODE   # 122630 = 롱 ETF 겸 신호원
+        inv = ag.INVERSE_CODE    # 252670 = 숏 ETF
+
+        # 신호원(롱 ETF 자체) 분봉 빌더 — 공식 분봉(api_feed)만 사용
+        lev_interval = getattr(config, "LEVERAGE_INDEX_CANDLE_INTERVAL", 3)
+        self.market_data_skill.init_stock(
+            lev,
+            on_candle_close=lambda c, _s=lev: self.harness.broadcast_event("CANDLE", c),
+            interval_min=lev_interval,
+            api_feed=True,
+        )
+        self.kiwoom.subscribe_realtime(lev)
+
+        # 숏 ETF: 틱 구독만 (SL/트레일 감시용)
+        self.market_data_skill.init_stock(inv)
+        self.kiwoom.subscribe_realtime(inv)
+
+        ag.reset_daily()
+        logger.info(
+            f"[Bot] 지수 레버리지 전략 초기화: 신호원/롱({lev}, {lev_interval}분봉) 숏({inv}) "
+            f"BB{config.LEVERAGE_INDEX_BB_PERIOD}/{config.LEVERAGE_INDEX_BB_MULT} "
+            f"진입 {config.LEVERAGE_INDEX_ENTRY_START}~"
         )
 
     # ─────────────────────────────────────────
@@ -414,7 +452,15 @@ class TradingBot:
         # (실측 2026-10-06: 재시작 후 흡수 → -3% 손절 36,115원 발동 → -94,560원 손실).
         vm_codes = {pos.code for pos in self.vm_manager.get_all().values()}
         invest_codes = set(self.personal_invest_agent.watched_codes())
-        skip_codes = vm_codes | invest_codes
+        # 레버리지(삼성)·지수 레버리지 에이전트 전용 종목도 일반 돌파 복구에서 제외.
+        # ETF도 get_positions에 잡히므로, 제외하지 않으면 재시작 시 레버리지 포지션을
+        # 일반 전략이 흡수해 -3% 기본손절이 붙는다(교차 소유권 불변식).
+        leverage_codes = set()
+        if hasattr(self, "leverage_agent"):
+            leverage_codes |= {self.leverage_agent.LEVERAGE_CODE, self.leverage_agent.INVERSE_CODE}
+        if hasattr(self, "leverage_index_agent"):
+            leverage_codes |= {self.leverage_index_agent.LEVERAGE_CODE, self.leverage_index_agent.INVERSE_CODE}
+        skip_codes = vm_codes | invest_codes | leverage_codes
         positions = self.kiwoom.get_positions()
 
         # 개별주 유령 포지션 정리 — 외부(다른 에이전트/수동)에서 청산된 종목이
@@ -856,6 +902,8 @@ class TradingBot:
                 # 당일 청산이 누락되지 않도록 매 루프마다 시각만으로 트리거)
                 if hasattr(self, "leverage_agent") and getattr(self.leverage_agent, "_position", None):
                     self.leverage_agent._check_force_exit(self.harness.get_context())
+                if hasattr(self, "leverage_index_agent") and getattr(self.leverage_index_agent, "_position", None):
+                    self.leverage_index_agent._check_force_exit(self.harness.get_context())
 
                 # 장 종료 처리
                 if now_hm >= config.TRADE_END_TIME:
@@ -894,6 +942,13 @@ class TradingBot:
                             target_codes + [ag.SAMSUNG_CODE, ag.LEVERAGE_CODE, ag.INVERSE_CODE]
                         ))
 
+                    # 지수 레버리지 전략 종목 추가 (신호원/롱 122630 + 숏 252670)
+                    if hasattr(self, "leverage_index_agent") and getattr(config, "LEVERAGE_INDEX_ENABLED", False):
+                        iag = self.leverage_index_agent
+                        target_codes = list(dict.fromkeys(
+                            target_codes + [iag.LEVERAGE_CODE, iag.INVERSE_CODE]
+                        ))
+
                     # 개별주 계획매매 종목 추가 (대기 계획 + 보유 포지션)
                     if hasattr(self, "personal_invest_agent"):
                         target_codes = list(dict.fromkeys(
@@ -911,6 +966,9 @@ class TradingBot:
                     if hasattr(self, "leverage_agent"):
                         held_codes |= {self.leverage_agent.LEVERAGE_CODE,
                                        self.leverage_agent.INVERSE_CODE}
+                    if hasattr(self, "leverage_index_agent") and getattr(config, "LEVERAGE_INDEX_ENABLED", False):
+                        held_codes |= {self.leverage_index_agent.LEVERAGE_CODE,
+                                       self.leverage_index_agent.INVERSE_CODE}
                     poll_active = getattr(config, "REST_POLL_INTERVAL", 180)
                     poll_idle   = getattr(config, "REST_POLL_INTERVAL_IDLE", 420)
 
@@ -974,6 +1032,35 @@ class TradingBot:
                                 elif n < 0:
                                     logger.warning(
                                         "[MarketData] 삼성전자 분봉 갱신 실패 → 30초 후 재시도"
+                                    )
+
+                # ── 지수 레버리지 신호 분봉(122630): ka10080 갱신 ──
+                # 122630은 틱 폴링(SL/TP)과 별개로 신호 분봉도 필요하므로 전용 스로틀 키 사용.
+                if (self._in_trade_hours() and hasattr(self, "leverage_index_agent")
+                        and getattr(config, "LEVERAGE_INDEX_ENABLED", False)):
+                    sig_code = self.leverage_index_agent.SIGNAL_CODE
+                    key = f"{sig_code}_candle"
+                    last_refresh = self._last_sim_poll.get(key, 0.0)
+                    if now_ts - last_refresh >= 30:
+                        market_data = self.harness.skills.get("market_data")
+                        if market_data:
+                            lev_min = getattr(config, "LEVERAGE_INDEX_CANDLE_INTERVAL", 3)
+                            candles = market_data.get_candles(sig_code)
+                            due = (
+                                not candles or
+                                (datetime.now() - candles[-1].datetime).total_seconds()
+                                >= lev_min * 120 + 10
+                            )
+                            if due:
+                                n = market_data.refresh_candles(sig_code, count=5)
+                                self._last_sim_poll[key] = now_ts
+                                if n > 0:
+                                    logger.info(
+                                        f"[MarketData] 지수레버리지 {sig_code} {lev_min}분봉 갱신: {n}개 주입 (ka10080)"
+                                    )
+                                elif n < 0:
+                                    logger.warning(
+                                        f"[MarketData] 지수레버리지 {sig_code} 분봉 갱신 실패 → 30초 후 재시도"
                                     )
 
                 # 수동 강제청산 확인
