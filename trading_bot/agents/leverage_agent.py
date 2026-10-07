@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime
 from typing import Optional, List
 
@@ -206,14 +207,22 @@ class LeverageInverseAgent(BaseAgent):
         if self._daily_trend_cache.get("date") == today:
             return self._daily_trend_cache.get("trend")
 
-        try:
-            df = harness.kiwoom.get_daily_data(self.SAMSUNG_CODE, count=max(30, slow_ma + 10))
-        except Exception as e:
-            logger.warning(f"[LeverageAgent] 일봉 조회 실패: {e}")
-            return self._daily_trend_cache.get("trend")  # 실패 시 이전 캐시 유지
+        # ka10081은 max_retries=0이라 429 한 번에 None을 반환한다. 추세 판단은 하루 1회라
+        # 지연에 민감하지 않으므로 몇 차례 재시도한다(조용한 None → 판단불가 오표시 방지).
+        df = None
+        for attempt in range(3):
+            try:
+                df = harness.kiwoom.get_daily_data(self.SAMSUNG_CODE, count=max(40, slow_ma + 15))
+            except Exception as e:
+                logger.warning(f"[LeverageAgent] 일봉 조회 예외(시도 {attempt+1}/3): {e}")
+                df = None
+            if df is not None and not df.empty:
+                break
+            time.sleep(1.5)
 
         if df is None or df.empty:
-            return self._daily_trend_cache.get("trend")
+            logger.warning("[LeverageAgent] 일봉 조회 3회 실패 → 추세 판단불가 (이전 캐시 유지)")
+            return self._daily_trend_cache.get("trend")  # 실패 시 이전 캐시 유지
 
         rows = df.to_dict("records")
         today_str = datetime.now().strftime("%Y%m%d")
@@ -221,7 +230,7 @@ class LeverageInverseAgent(BaseAgent):
             rows = rows[:-1]  # 오늘 형성 중인 봉 제외 — 전일까지 확정봉만 사용 (장중 노이즈로 추세 흔들림 방지)
 
         if len(rows) < slow_ma:
-            logger.warning(f"[LeverageAgent] 일봉 데이터 부족({len(rows)}/{slow_ma}) → 추세 판단 불가")
+            logger.warning(f"[LeverageAgent] 일봉 데이터 부족({len(rows)}행/{slow_ma}, df원본 {len(df)}행) → 추세 판단 불가")
             return None
 
         closes = [r["close"] for r in rows]

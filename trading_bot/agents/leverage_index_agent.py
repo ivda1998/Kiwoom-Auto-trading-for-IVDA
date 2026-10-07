@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -126,13 +127,20 @@ class LeverageIndexAgent(BaseAgent):
         if self._daily_trend_cache.get("date") == today:
             return self._daily_trend_cache.get("trend")
 
-        try:
-            df = harness.kiwoom.get_daily_data(self.SIGNAL_CODE, count=max(30, slow_ma + 10))
-        except Exception as e:
-            logger.warning(f"[LeverageIndexAgent] 일봉 조회 실패: {e}")
-            return self._daily_trend_cache.get("trend")
+        # ka10081 max_retries=0 → 429 한 번에 None. 하루 1회 판단이라 재시도로 보강.
+        df = None
+        for attempt in range(3):
+            try:
+                df = harness.kiwoom.get_daily_data(self.SIGNAL_CODE, count=max(40, slow_ma + 15))
+            except Exception as e:
+                logger.warning(f"[LeverageIndexAgent] 일봉 조회 예외(시도 {attempt+1}/3): {e}")
+                df = None
+            if df is not None and not df.empty:
+                break
+            time.sleep(1.5)
 
         if df is None or df.empty:
+            logger.warning("[LeverageIndexAgent] 일봉 조회 3회 실패 → 추세 판단불가 (이전 캐시 유지)")
             return self._daily_trend_cache.get("trend")
 
         rows = df.to_dict("records")
@@ -141,7 +149,7 @@ class LeverageIndexAgent(BaseAgent):
             rows = rows[:-1]   # 오늘 형성 중인 봉 제외
 
         if len(rows) < slow_ma:
-            logger.warning(f"[LeverageIndexAgent] 일봉 부족({len(rows)}/{slow_ma}) → 추세 판단 불가")
+            logger.warning(f"[LeverageIndexAgent] 일봉 부족({len(rows)}행/{slow_ma}, df원본 {len(df)}행) → 추세 판단 불가")
             return None
 
         closes = [r["close"] for r in rows]

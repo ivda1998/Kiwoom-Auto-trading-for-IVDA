@@ -2342,16 +2342,47 @@ class TradingBot:
                     f"평가손익: {pnl_amt:+,.0f}원 ({pnl_rate:+.2%}) | 피크수익: {pos.get('peak_ret',0.0):+.2%}",
                     f"SL: {pos['stop_loss']:,}원 | 진입시각: {pos.get('entered_at','?')[:19]}",
                 ]
-            # 신호원 분봉 수
+            # ── 지수 신호 분석 (삼성 /lev BOLLINGER 디스플레이와 동형) ──
+            lines.append("\n📊 <b>지수 신호 분석</b> [전략: 일봉추세+볼린저돌파]")
             try:
                 market_data = self.harness.skills.get("market_data")
+                # 장전 등 빌더 미생성 시 온디맨드 생성
+                if market_data and not market_data.get_builder(ag.SIGNAL_CODE) and self._kiwoom_ready:
+                    market_data.init_stock(
+                        ag.SIGNAL_CODE,
+                        on_candle_close=lambda c: self.harness.broadcast_event("CANDLE", c),
+                        interval_min=getattr(config, "LEVERAGE_INDEX_CANDLE_INTERVAL", 3),
+                        api_feed=True,
+                    )
                 candles = market_data.get_candles(ag.SIGNAL_CODE) if market_data else []
                 closed  = [c for c in candles if c.is_closed]
                 sig_price = self.harness.get_context().get("last_prices", {}).get(ag.LEVERAGE_CODE, 0)
-                lines.append(f"\n📊 신호원 {ag.SIGNAL_CODE} 확정봉 {len(closed)}개"
-                             + (f" | 현재가 {sig_price:,}원" if sig_price else ""))
-            except Exception:
-                pass
+                price_str = f"{sig_price:,}원" if sig_price else "틱 없음"
+                lines.append(f"신호원 {ag.SIGNAL_CODE}(롱ETF) 현재가: {price_str} | 확정봉 {len(closed)}개")
+
+                fast_ma = config.LEVERAGE_INDEX_TREND_FAST_MA
+                slow_ma = config.LEVERAGE_INDEX_TREND_SLOW_MA
+                trend = ag._get_daily_trend(self.harness) if self._kiwoom_ready else None
+                trend_sym = "▲상승(롱만)" if trend == "UP" else ("▼하락(숏만)" if trend == "DOWN" else "❓판단불가")
+                lines.append(f"일봉추세({fast_ma}일/{slow_ma}일선): {trend_sym}")
+
+                period = config.LEVERAGE_INDEX_BB_PERIOD
+                mult   = config.LEVERAGE_INDEX_BB_MULT
+                min_c  = period + 1
+                if len(closed) < min_c:
+                    lines.append(f"캔들 부족 ({len(closed)}/{min_c}봉) — 볼린저밴드 분석 불가")
+                else:
+                    last   = closed[-1]
+                    closes = [c.close for c in closed]
+                    mid, upper, lower = ag._bollinger(closes, period, mult)
+                    lines.append(f"최신봉[{last.datetime.strftime('%H:%M')}] 종가: {last.close:,}원")
+                    lines.append(f"볼린저({period}/{mult}): 중심{mid:,.0f} 상단{upper:,.0f} 하단{lower:,.0f}")
+                    long_ok  = trend == "UP" and last.close > upper
+                    short_ok = trend == "DOWN" and last.close < lower
+                    lines.append(f"🟢 롱조건(상승추세+상단돌파→122630): {'✅ 충족' if long_ok else '❌ 미충족'}")
+                    lines.append(f"🔴 숏조건(하락추세+하단돌파→252670): {'✅ 충족' if short_ok else '❌ 미충족'}")
+            except Exception as e:
+                lines.append(f"신호 분석 실패: {e}")
             return "\n".join(lines)
 
         def cmd_help(_args):
