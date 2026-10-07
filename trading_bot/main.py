@@ -282,6 +282,11 @@ class TradingBot:
             self.kiwoom.subscribe_realtime(code)
 
         self.leverage_agent.reset_daily()
+        # 재시작 시 실계좌 보유와 대조해 포지션 재adopt(고아화 방지, SL/트레일/EOD 승계)
+        self.leverage_agent.restore_position(
+            getattr(self, "_synced_positions", None) or self.kiwoom.get_positions(),
+            harness=self.harness,
+        )
         logger.info(
             f"[Bot] 레버리지 전략 초기화: 삼성({samsung}, {lev_interval}분봉) "
             f"레버리지({lev}) 인버스({inv})"
@@ -314,6 +319,11 @@ class TradingBot:
         self.kiwoom.subscribe_realtime(inv)
 
         ag.reset_daily()
+        # 재시작 시 실계좌 보유와 대조해 포지션 재adopt(고아화 방지, SL/트레일/EOD 승계)
+        ag.restore_position(
+            getattr(self, "_synced_positions", None) or self.kiwoom.get_positions(),
+            harness=self.harness,
+        )
         logger.info(
             f"[Bot] 지수 레버리지 전략 초기화: 신호원/롱({lev}, {lev_interval}분봉) 숏({inv}) "
             f"BB{config.LEVERAGE_INDEX_BB_PERIOD}/{config.LEVERAGE_INDEX_BB_MULT} "
@@ -462,6 +472,7 @@ class TradingBot:
             leverage_codes |= {self.leverage_index_agent.LEVERAGE_CODE, self.leverage_index_agent.INVERSE_CODE}
         skip_codes = vm_codes | invest_codes | leverage_codes
         positions = self.kiwoom.get_positions()
+        self._synced_positions = positions   # 레버리지 에이전트 포지션 재adopt(restore_position)에 재사용
 
         # 개별주 유령 포지션 정리 — 외부(다른 에이전트/수동)에서 청산된 종목이
         # PersonalInvestAgent 상태에 보유로 남아있으면 실계좌 기준으로 제거한다.

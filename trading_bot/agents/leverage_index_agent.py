@@ -7,6 +7,7 @@ from typing import Optional
 
 import config
 from agents.base_agent import BaseAgent
+from agents.position_store import load_position, save_position
 from logger import TradeLogger
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,10 @@ class LeverageIndexAgent(BaseAgent):
         self._consec_losses    = 0            # 연속 손절 횟수
         self._halted_reason: Optional[str] = None  # None이면 정상, 문자열이면 당일 신규진입 중단
         self._floor_warned_date: Optional[str] = None
-        self._halt_state_path = os.path.join(os.path.dirname(config.DB_PATH), "leverage_index_halt.json")
+        self._state_date: Optional[str] = None       # 가드레일 상태파일의 날짜(같은 날 재시작 판별)
+        _data_dir = os.path.dirname(config.DB_PATH)
+        self._halt_state_path = os.path.join(_data_dir, "leverage_index_halt.json")
+        self._pos_state_path  = os.path.join(_data_dir, "leverage_index_pos.json")
         self._load_halt_state()
 
     @property
@@ -299,6 +303,7 @@ class LeverageIndexAgent(BaseAgent):
             "peak_ret":    0.0,
             "entered_at":  datetime.now().isoformat(),
         }
+        save_position(self._pos_state_path, self._position)  # 재시작 승계용 영속화
 
         logger.info(
             f"[LeverageIndexAgent] {direction} 진입: {etf_name}({etf_code}) "
@@ -347,6 +352,7 @@ class LeverageIndexAgent(BaseAgent):
         pnl_rate   = (exit_price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] else 0.0
         self._position = None
         self._last_exit_time = datetime.now()
+        save_position(self._pos_state_path, None)  # 청산 → 영속파일 제거
 
         # ── 가드레일 집계 ──
         self._day_realized_pnl += pnl
@@ -444,6 +450,7 @@ class LeverageIndexAgent(BaseAgent):
         except Exception as e:
             logger.warning(f"[LeverageIndexAgent] 가드레일 상태 로드 실패: {e}")
             return
+        self._state_date = st.get("date")
         if st.get("date") != datetime.now().strftime("%Y-%m-%d"):
             return  # 날짜 바뀜 → 무시(자동 해제)
         self._day_realized_pnl = st.get("pnl", 0.0)
@@ -472,18 +479,81 @@ class LeverageIndexAgent(BaseAgent):
     # 일일 초기화
     # ─────────────────────────────────────────
     def reset_daily(self):
+        """init(=봇 기동)마다 호출된다. 날짜가 바뀌었을 때만 가드레일을 초기화하고,
+        같은 날 재시작이면 정지상태(halt/누계/연속손절)를 보존한다 — 재시작으로
+        서킷브레이커가 리셋되지 않도록. 포지션은 여기서 비우고 main이 restore_position으로
+        실계좌와 대조해 재adopt한다(영속파일은 건드리지 않음)."""
         self._force_exited_today = False
-        self._day_realized_pnl = 0.0
-        self._consec_losses    = 0
-        self._halted_reason    = None
-        self._floor_warned_date = None
-        self._save_halt_state()
-        if self._position:
-            logger.warning(
-                f"[LeverageIndexAgent] 일일 초기화 시 잔여 포지션 발견: "
-                f"{self._position['code']} → 내부 상태 초기화"
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._state_date != today:   # 새로운 거래일 → 가드레일 초기화
+            self._day_realized_pnl = 0.0
+            self._consec_losses    = 0
+            self._halted_reason    = None
+            self._floor_warned_date = None
+            self._state_date = today
+            self._save_halt_state()
+        else:
+            logger.info(
+                f"[LeverageIndexAgent] 같은 날 재시작 — 가드레일 상태 보존 "
+                f"(당일손익 {self._day_realized_pnl:+,.0f}원, 연속손절 {self._consec_losses}회, "
+                f"정지={'예:'+self._halted_reason if self._halted_reason else '아니오'})"
             )
+        # 포지션은 비우되 영속파일은 유지 → restore_position이 실계좌와 대조 후 결정
+        self._position = None
+
+    def restore_position(self, account_positions: list, harness=None):
+        """재시작 시 실계좌(get_positions) 보유와 영속파일을 대조해 포지션을 재adopt.
+        - 계좌에 자기 종목 보유가 없으면: 영속파일 제거 + 포지션 없음.
+        - 보유가 있으면: 영속파일(SL/peak 포함)이 일치하면 그대로 승계, 없으면 계좌 기준 재구성.
+        SL/트레일/EOD가 끊김 없이 이어진다. reset_daily 다음에 호출해야 한다."""
+        own = {self.LEVERAGE_CODE, self.INVERSE_CODE}
+        held = [p for p in (account_positions or []) if p.get("code") in own and int(p.get("qty", 0)) > 0]
+        persisted = load_position(self._pos_state_path)
+
+        if not held:
             self._position = None
+            save_position(self._pos_state_path, None)
+            if persisted:
+                logger.info("[LeverageIndexAgent] 영속 포지션 있으나 실계좌 보유 없음 → 파일 정리(이미 청산됨)")
+            return
+
+        acct  = held[0]
+        code  = acct["code"]
+        qty   = int(acct["qty"])
+        entry = float(acct.get("entry_price") or 0)
+
+        if persisted and persisted.get("code") == code:
+            pos = dict(persisted)
+            pos["qty"] = qty   # 실계좌 수량으로 보정(부분체결 등)
+            src = "영속복원(SL/peak 승계)"
+        else:
+            direction = "LEVERAGE" if code == self.LEVERAGE_CODE else "INVERSE"
+            sl_rate = getattr(config, "LEVERAGE_INDEX_SL_RATE", 0.025)
+            pos = {
+                "code": code,
+                "name": "KODEX레버리지" if direction == "LEVERAGE" else "KODEX인버스",
+                "direction": direction,
+                "qty": qty,
+                "entry_price": entry,
+                "stop_loss": round(entry * (1 - sl_rate)) if entry else 0,
+                "peak_ret": 0.0,
+                "entered_at": datetime.now().isoformat(),
+            }
+            src = "계좌기준 재구성(영속파일 불일치/없음)"
+
+        self._position = pos
+        save_position(self._pos_state_path, pos)
+        logger.warning(
+            f"[LeverageIndexAgent] ♻️ 포지션 재adopt({src}): {pos['code']} {pos['qty']}주 "
+            f"@ {pos['entry_price']:,}원 | SL {pos['stop_loss']:,} peak {pos.get('peak_ret', 0.0):+.2%}"
+        )
+        notifier = harness.get_context().get("notifier") if harness else None
+        if notifier:
+            notifier.send(
+                f"♻️ <b>지수 레버리지 포지션 복원</b>\n"
+                f"{pos['code']} {pos['qty']}주 @ {pos['entry_price']:,}원 | SL {pos['stop_loss']:,}\n"
+                f"재시작 전 포지션 승계 → SL/트레일/EOD 관리 재개 ({src})"
+            )
 
     def _next_screen(self) -> str:
         self._screen_counter = (self._screen_counter + 1) % 10

@@ -1,10 +1,12 @@
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Optional, List
 
 import config
 from agents.base_agent import BaseAgent
+from agents.position_store import load_position, save_position
 from logger import TradeLogger
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,7 @@ class LeverageInverseAgent(BaseAgent):
         self._force_exited_today       = False
         self._last_exit_time: Optional[datetime] = None  # 재진입 쿨다운용
         self._daily_trend_cache: dict  = {}  # {"date": "YYYY-MM-DD", "trend": "UP"/"DOWN"/None}
+        self._pos_state_path = os.path.join(os.path.dirname(config.DB_PATH), "leverage_samsung_pos.json")
 
     # ─────────────────────────────────────────
     # 이벤트 디스패치
@@ -499,6 +502,7 @@ class LeverageInverseAgent(BaseAgent):
             "peak_ret":    0.0,   # 트레일링 스탑용 최고 favorable 수익률
             "entered_at":  datetime.now().isoformat(),
         }
+        save_position(self._pos_state_path, self._position)  # 재시작 승계용 영속화
 
         logger.info(
             f"[LeverageAgent] {direction} 진입: {etf_name}({etf_code}) "
@@ -551,6 +555,7 @@ class LeverageInverseAgent(BaseAgent):
         pnl_rate   = (exit_price - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] else 0.0
         self._position     = None
         self._last_exit_time = datetime.now()  # 재진입 쿨다운 시작
+        save_position(self._pos_state_path, None)  # 청산 → 영속파일 제거
 
         logger.info(
             f"[LeverageAgent] 청산({reason}): {etf_name}({etf_code}) "
@@ -622,13 +627,69 @@ class LeverageInverseAgent(BaseAgent):
     # ─────────────────────────────────────────
 
     def reset_daily(self):
+        # 포지션은 비우되 영속파일은 유지 → main이 restore_position으로 실계좌와 대조 후 재adopt.
         self._force_exited_today = False
         if self._position:
             logger.warning(
                 f"[LeverageAgent] 일일 초기화 시 잔여 포지션 발견: "
-                f"{self._position['code']} → 내부 상태 초기화"
+                f"{self._position['code']} → 내부 상태 초기화(영속파일로 재adopt 예정)"
             )
             self._position = None
+
+    def restore_position(self, account_positions: list, harness=None):
+        """재시작 시 실계좌(get_positions) 보유와 영속파일을 대조해 포지션을 재adopt.
+        레버리지 포지션이 재시작으로 고아화되지 않도록 SL/트레일/EOD를 끊김 없이 승계한다.
+        reset_daily 다음에 호출해야 한다(그래야 비워진 뒤 복원)."""
+        own = {self.LEVERAGE_CODE, self.INVERSE_CODE}
+        held = [p for p in (account_positions or []) if p.get("code") in own and int(p.get("qty", 0)) > 0]
+        persisted = load_position(self._pos_state_path)
+
+        if not held:
+            self._position = None
+            save_position(self._pos_state_path, None)
+            if persisted:
+                logger.info("[LeverageAgent] 영속 포지션 있으나 실계좌 보유 없음 → 파일 정리(이미 청산됨)")
+            return
+
+        acct  = held[0]
+        code  = acct["code"]
+        qty   = int(acct["qty"])
+        entry = float(acct.get("entry_price") or 0)
+
+        if persisted and persisted.get("code") == code:
+            pos = dict(persisted)
+            pos["qty"] = qty
+            src = "영속복원(SL/TP/peak 승계)"
+        else:
+            direction = "LEVERAGE" if code == self.LEVERAGE_CODE else "INVERSE"
+            sl_rate = getattr(config, "LEVERAGE_SL_RATE", self.SL_RATE)
+            tp_rate = getattr(config, "LEVERAGE_TP_RATE", self.TP_RATE)
+            pos = {
+                "code": code,
+                "name": "KODEX삼성레버리지" if direction == "LEVERAGE" else "PLUS삼성인버스2x",
+                "direction": direction,
+                "qty": qty,
+                "entry_price": entry,
+                "stop_loss": round(entry * (1 - sl_rate)) if entry else 0,
+                "take_profit": round(entry * (1 + tp_rate)) if entry else 0,
+                "peak_ret": 0.0,
+                "entered_at": datetime.now().isoformat(),
+            }
+            src = "계좌기준 재구성(영속파일 불일치/없음)"
+
+        self._position = pos
+        save_position(self._pos_state_path, pos)
+        logger.warning(
+            f"[LeverageAgent] ♻️ 포지션 재adopt({src}): {pos['code']} {pos['qty']}주 "
+            f"@ {pos['entry_price']:,}원 | SL {pos['stop_loss']:,} peak {pos.get('peak_ret', 0.0):+.2%}"
+        )
+        notifier = harness.get_context().get("notifier") if harness else None
+        if notifier:
+            notifier.send(
+                f"♻️ <b>삼성 레버리지 포지션 복원</b>\n"
+                f"{pos['code']} {pos['qty']}주 @ {pos['entry_price']:,}원 | SL {pos['stop_loss']:,}\n"
+                f"재시작 전 포지션 승계 → SL/트레일/EOD 관리 재개 ({src})"
+            )
 
     # ─────────────────────────────────────────
     # 유틸
