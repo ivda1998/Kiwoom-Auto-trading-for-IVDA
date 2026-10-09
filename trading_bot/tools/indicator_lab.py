@@ -264,7 +264,8 @@ def volume_sma_series(volumes, period):
 
 def simulate(all_bars, trend_lookup, signal_fn,
              sl=0.025, trail_gap=0.015, entry_start='09:00', force_exit='1520',
-             cooldown_bars=1, fee=FEE):
+             cooldown_bars=1, fee=FEE,
+             time_stop_bars=None, breakeven_trigger=None, trail_activate=None):
     """signal_fn(i, trend) -> 'L' / 'S' / None"""
     trades = []
     pos = None
@@ -280,18 +281,26 @@ def simulate(all_bars, trend_lookup, signal_fn,
                 lo = sign * (bar['low'] - pos['p']) / pos['p'] * 2
                 hi = sign * (bar['high'] - pos['p']) / pos['p'] * 2
                 pos['peak'] = max(pos['peak'], hi)
-                if lo <= -sl:
-                    trades.append({'d': d, 'ret': -sl - fee, 'r': 'SL', 'dir': pos['dir']})
+                cur_ret = sign * (bar['close'] - pos['p']) / pos['p'] * 2
+                eff_sl = -sl
+                if breakeven_trigger is not None and pos['peak'] >= breakeven_trigger:
+                    eff_sl = 0.0
+                act = trail_activate if trail_activate is not None else sl
+                if lo <= eff_sl:
+                    trades.append({'d': d, 'ret': eff_sl - fee, 'r': 'SL', 'dir': pos['dir']})
                     pos = None
                     last_exit_idx = i
                     continue
-                if trail_gap and pos['peak'] >= sl:
-                    cur_ret = sign * (bar['close'] - pos['p']) / pos['p'] * 2
-                    if (pos['peak'] - cur_ret) >= trail_gap:
-                        trades.append({'d': d, 'ret': cur_ret - fee, 'r': 'TRAIL', 'dir': pos['dir']})
-                        pos = None
-                        last_exit_idx = i
-                        continue
+                if trail_gap and pos['peak'] >= act and (pos['peak'] - cur_ret) >= trail_gap:
+                    trades.append({'d': d, 'ret': cur_ret - fee, 'r': 'TRAIL', 'dir': pos['dir']})
+                    pos = None
+                    last_exit_idx = i
+                    continue
+                if time_stop_bars is not None and (i - pos['ei']) >= time_stop_bars:
+                    trades.append({'d': d, 'ret': cur_ret - fee, 'r': 'TIME', 'dir': pos['dir']})
+                    pos = None
+                    last_exit_idx = i
+                    continue
             if pos and t >= force_exit:
                 ret = sign * (bar['close'] - pos['p']) / pos['p'] * 2 - fee
                 trades.append({'d': d, 'ret': ret, 'r': 'EOD', 'dir': pos['dir']})
@@ -516,6 +525,65 @@ def trade_stats(trades: list) -> dict:
     }
 
 
+def paired_diff_stats(a_trades: list, b_trades: list) -> dict:
+    """두 전략의 '일자별 수익 차이' 검정 (a=후보, b=벤치마크).
+    같은 종목·세션을 거래해 수익이 강하게 상관되므로, 절대 총손익 비교보다
+    '후보가 벤치마크보다 하루당 더 버는가'를 짝지은 차이(diff=a-b)의 t값으로 보는 게
+    훨씬 민감하고 공정하다. t>0 이면 후보 우위, t가 그 유의성(노이즈 대비 마진)."""
+    da, db = defaultdict(float), defaultdict(float)
+    for t in a_trades:
+        da[t['d']] += t['ret']
+    for t in b_trades:
+        db[t['d']] += t['ret']
+    days = sorted(set(da) | set(db))
+    diffs = [da[d] - db[d] for d in days]
+    n = len(diffs)
+    if n < 2:
+        return {'n': n, 'mean_ret': 0.0, 'mean_krw': 0.0, 't': 0.0}
+    mean = sum(diffs) / n
+    sd = (sum((x - mean) ** 2 for x in diffs) / (n - 1)) ** 0.5
+    return {'n': n, 'mean_ret': mean, 'mean_krw': mean * CAPITAL,
+            't': mean / (sd / (n ** 0.5)) if sd > 0 else 0.0}
+
+
+def equity_stats(rets: list) -> dict:
+    """거래(또는 베팅) 수익 시퀀스 → 자산곡선 지표(가산식 누적합 기준).
+    사이징 평가용 — total(총수익률), mdd(최대낙폭), sharpe(거래당×√n=t스케일), calmar(total/mdd)."""
+    n = len(rets)
+    if n == 0:
+        return {'n': 0, 'total': 0.0, 'mdd': 0.0, 'sharpe': 0.0, 'calmar': 0.0}
+    eq = peak = mdd = 0.0
+    for r in rets:
+        eq += r
+        if eq > peak:
+            peak = eq
+        if peak - eq > mdd:
+            mdd = peak - eq
+    mean = sum(rets) / n
+    var = sum((r - mean) ** 2 for r in rets) / n
+    sd = var ** 0.5
+    sharpe = (mean / sd) * (n ** 0.5) if sd > 0 else 0.0
+    return {'n': n, 'total': eq, 'mdd': mdd, 'sharpe': sharpe,
+            'calmar': (eq / mdd) if mdd > 0 else 0.0}
+
+
+def vol_target_sizes(trades: list, vol_prev: dict, target=None, lo=0.3, hi=2.0) -> list:
+    """변동성 타게팅 사이즈(리스크관리). 각 거래에 size=clip(target/전일변동성, lo, hi).
+    저변동성일 때 크게·고변동성일 때 작게 → 거래별 리스크 기여 균등화(낙폭 완화 목적).
+    target 미지정 시 전일변동성 중앙값(평균 사이즈≈1 → 총수익 비교 가능). 룩어헤드 없음."""
+    vs = [vol_prev.get(t['d']) for t in trades]
+    valid = sorted(v for v in vs if v and v > 0)
+    if not valid:
+        return [1.0] * len(trades)
+    if target is None:
+        m = len(valid)
+        target = valid[m // 2] if m % 2 else (valid[m // 2 - 1] + valid[m // 2]) / 2
+    out = []
+    for v in vs:
+        out.append(1.0 if (not v or v <= 0) else max(lo, min(hi, target / v)))
+    return out
+
+
 N_REGIMES = 4
 """국면분리 검증에 쓸 구간 수. 2026-09-29: 총손익+t값+홀드아웃 세 관문을 통과한 후보 2개
 (BB29/0.8·10:00, BB34/0.7·10:00)가 모두 '최근 국면에만 의존'해서 기각됐다 — 4구간 중
@@ -561,10 +629,14 @@ def evaluate_candidate(candidate: dict, all_bars: list, daily: list):
         sl=candidate.get('sl', 0.025),
         trail_gap=candidate.get('trail_gap', 0.015),
         entry_start=candidate.get('entry_start', '09:00'),
+        time_stop_bars=candidate.get('time_stop_bars'),
+        breakeven_trigger=candidate.get('breakeven_trigger'),
+        trail_activate=candidate.get('trail_activate'),
     )
     out = trade_stats(res['trades'])
     out['holdout'] = trade_stats([t for t in res['trades'] if str(t['d']) >= HOLDOUT_START])
     out['regimes'] = regime_stats(res['trades'], regime_boundaries(all_bars))
+    out['trades'] = res['trades']  # paired_diff_stats용 (영속화 전 strip_trades_for_persist로 제거)
     return out
 
 
@@ -610,7 +682,8 @@ def load_short_lookup(path_3min: str) -> dict:
 def simulate_index(long_bars, short_lookup, trend_lookup, signal_fn,
                    sl=0.025, trail_gap=0.015, entry_start='09:30', force_exit='1520',
                    cooldown_bars=1, slip_ticks=0.5, long_tick=5, short_tick=5, fee=FEE,
-                   leg_mode='longshort'):
+                   leg_mode='longshort',
+                   time_stop_bars=None, breakeven_trigger=None, trail_activate=None):
     """지수 dual-ETF 현실모델. signal_fn(i, trend)->'L'/'S'/None (신호원=long_bars=122630).
       롱('L') → long_bars 자기 시세로 진입/청산 (ETF가 2x 내장, ×1 체결)
       숏('S') → short_lookup[dt] 시세로 진입/청산 (ETF가 1x인버스 내장, ×1 체결)
@@ -634,12 +707,18 @@ def simulate_index(long_bars, short_lookup, trend_lookup, signal_fn,
                     lo = (xbar['low'] - ep) / ep
                     hi = (xbar['high'] - ep) / ep
                     pos['peak'] = max(pos['peak'], hi)
-                    if lo <= -sl:
-                        exitpx = ep * (1 - sl)
-                    elif trail_gap and pos['peak'] >= sl:
-                        cur = (xbar['close'] - ep) / ep
-                        if (pos['peak'] - cur) >= trail_gap:
-                            exitpx = xbar['close']
+                    cur = (xbar['close'] - ep) / ep
+                    # 손절선 — breakeven 상향(peak가 트리거 넘으면 손절선을 본전=0으로)
+                    eff_sl = -sl
+                    if breakeven_trigger is not None and pos['peak'] >= breakeven_trigger:
+                        eff_sl = 0.0
+                    act = trail_activate if trail_activate is not None else sl
+                    if lo <= eff_sl:
+                        exitpx = ep * (1 + eff_sl)
+                    elif trail_gap and pos['peak'] >= act and (pos['peak'] - cur) >= trail_gap:
+                        exitpx = xbar['close']
+                    elif time_stop_bars is not None and (i - pos['ei']) >= time_stop_bars:
+                        exitpx = xbar['close']   # 최대보유 초과 → 종가 청산
                 if exitpx is None and t >= force_exit:
                     exitpx = xbar['close']
                 if exitpx is not None:
@@ -692,6 +771,9 @@ def evaluate_index_candidate(candidate: dict, long_bars: list, short_lookup: dic
         slip_ticks=candidate.get('slip_ticks', 0.5),
         long_tick=long_tick, short_tick=short_tick,
         leg_mode=candidate.get('leg_mode', 'longshort'),
+        time_stop_bars=candidate.get('time_stop_bars'),
+        breakeven_trigger=candidate.get('breakeven_trigger'),
+        trail_activate=candidate.get('trail_activate'),
     )
     trades = res['trades']
     out = trade_stats(trades)
@@ -699,4 +781,134 @@ def evaluate_index_candidate(candidate: dict, long_bars: list, short_lookup: dic
     out['regimes'] = regime_stats(trades, regime_boundaries(long_bars))
     out['long'] = trade_stats([t for t in trades if t['dir'] == 'L'])
     out['short'] = trade_stats([t for t in trades if t['dir'] == 'S'])
+    out['trades'] = trades  # paired_diff_stats용 (영속화 전 strip_trades_for_persist로 제거)
+    return out
+
+
+# ─────────────────────────────────────────
+# 공격형 HA 플립 초단타(스캘프) 엔진 — 별도 전략(ScalpFlip)
+#   신호원(롱 ETF, 예 233740 코스닥150레버리지)의 1분봉 하이킨아시 색 전환으로
+#   롱/숏을 플립. 추세게이트 없음(양방향 자유). 타이트 SL/TP + 반대전환 플립 + EOD.
+#   롱→롱ETF, 숏→숏ETF(예 251340) 실제 시세 ×1 체결, dt정합·실측틱 슬리피지.
+# ─────────────────────────────────────────
+
+def heikin_ashi(bars: list) -> list:
+    """bars(list[dict] open/high/low/close) → HA dict 리스트(ha_open/ha_close/color).
+    color: +1 양봉(ha_close>ha_open) / -1 음봉. 첫 봉은 (O+C)/2로 시드."""
+    out = []
+    prev_o = prev_c = None
+    for b in bars:
+        ha_c = (b['open'] + b['high'] + b['low'] + b['close']) / 4.0
+        if prev_o is None:
+            ha_o = (b['open'] + b['close']) / 2.0
+        else:
+            ha_o = (prev_o + prev_c) / 2.0
+        color = 1 if ha_c > ha_o else (-1 if ha_c < ha_o else 0)
+        out.append({'ha_open': ha_o, 'ha_close': ha_c, 'color': color})
+        prev_o, prev_c = ha_o, ha_c
+    return out
+
+
+def simulate_scalp(long_bars, short_lookup, sl=0.004, tp=0.006, trail_gap=None,
+                   flip_confirm_n=1, entry_start='09:05', force_exit='1520',
+                   slip_ticks=0.5, long_tick=5, short_tick=5, fee=FEE,
+                   use_trend=False, trend_lookup=None):
+    """HA 색전환 플립 스캘퍼. long_bars=신호원(롱 ETF) 1분봉.
+      - 새 색이 flip_confirm_n봉 연속되면 그 방향으로 진입/플립(반대보유 시 청산 후 반대진입).
+      - 청산: 타이트 SL(-sl)·TP(+tp)·선택적 트레일·반대플립·EOD. 방향 무관(둘 다 매수).
+      - use_trend=True면 trend_lookup(d)로 방향 게이트(기본 False=게이트 없음, 공격형).
+    반환 {'trades':[{d,ret,dir,r}]}. 비용=fee+slip_ticks틱/측."""
+    ha = heikin_ashi(long_bars)
+    trades = []
+    pos = None           # {'dir','p','ei','peak'}
+    run_color = 0        # 현재까지 연속된 색
+    run_len = 0
+    es = entry_start.replace(':', '')
+
+    def tick_of(dirn):
+        return long_tick if dirn == 'L' else short_tick
+
+    def do_exit(i, bar, reason):
+        nonlocal pos
+        ep = pos['p']
+        xbar = bar if pos['dir'] == 'L' else short_lookup.get(long_bars[i]['dt'])
+        if xbar is None:
+            return False
+        px = reason_px if (reason_px := {'SL': ep * (1 - sl), 'TP': ep * (1 + tp)}.get(reason)) else xbar['close']
+        tk = tick_of(pos['dir'])
+        slip = slip_ticks * tk * (1 / ep + 1 / max(px, 1e-9))
+        trades.append({'d': bar['d'], 'ret': (px - ep) / ep - fee - slip, 'dir': pos['dir'], 'r': reason})
+        pos = None
+        return True
+
+    for i, bar in enumerate(long_bars):
+        d, t, dt = bar['d'], bar['t'], bar['dt']
+        c = ha[i]['color']
+        if c != 0 and c == run_color:
+            run_len += 1
+        elif c != 0:
+            run_color = c; run_len = 1
+
+        # 보유 중 청산 체크 (SL/TP/트레일/EOD) — 진입봉 이후
+        if pos and i > pos['ei']:
+            xbar = bar if pos['dir'] == 'L' else short_lookup.get(dt)
+            if xbar is not None:
+                ep = pos['p']
+                lo = (xbar['low'] - ep) / ep; hi = (xbar['high'] - ep) / ep
+                pos['peak'] = max(pos['peak'], hi)
+                if lo <= -sl:
+                    do_exit(i, bar, 'SL'); 
+                elif tp and hi >= tp:
+                    do_exit(i, bar, 'TP')
+                elif trail_gap and pos['peak'] >= tp and (pos['peak'] - (xbar['close'] - ep) / ep) >= trail_gap:
+                    do_exit(i, bar, 'TRAIL')
+        # EOD
+        if pos and t >= force_exit:
+            do_exit(i, bar, 'EOD'); 
+            continue
+
+        # 플립/진입: 색이 flip_confirm_n 연속 충족 & 진입시간대
+        if es <= t <= '1500' and run_len >= flip_confirm_n and run_color != 0:
+            desired = 'L' if run_color == 1 else 'S'
+            if use_trend and trend_lookup is not None:
+                tr = trend_lookup(d)
+                if (desired == 'L' and tr != 'UP') or (desired == 'S' and tr != 'DOWN'):
+                    desired = None
+            if desired and (pos is None or pos['dir'] != desired):
+                if pos is not None:
+                    do_exit(i, bar, 'FLIP')
+                entry_bar = bar if desired == 'L' else short_lookup.get(dt)
+                if entry_bar is not None and t < force_exit:
+                    pos = {'dir': desired, 'p': entry_bar['close'], 'ei': i, 'peak': 0.0}
+
+    if pos is not None:
+        do_exit(len(long_bars) - 1, long_bars[-1], 'EOD')
+    return {'trades': trades}
+
+
+def evaluate_scalp_candidate(candidate: dict, long_bars: list, short_lookup: dict,
+                             long_tick: int = 5, short_tick: int = 5, daily: list = None):
+    """HA 스캘프 후보 평가 — 전구간+holdout+regimes+레그분해 + 청산사유 분포."""
+    tl = None
+    if candidate.get('use_trend') and daily is not None:
+        tl = make_trend_lookup(daily, candidate.get('fast_ma', 10), candidate.get('slow_ma', 20))
+    res = simulate_scalp(
+        long_bars, short_lookup,
+        sl=candidate.get('sl', 0.004), tp=candidate.get('tp', 0.006),
+        trail_gap=candidate.get('trail_gap'), flip_confirm_n=candidate.get('flip_confirm_n', 1),
+        entry_start=candidate.get('entry_start', '09:05'),
+        slip_ticks=candidate.get('slip_ticks', 0.5),
+        long_tick=long_tick, short_tick=short_tick,
+        use_trend=candidate.get('use_trend', False), trend_lookup=tl,
+    )
+    trades = res['trades']
+    out = trade_stats(trades)
+    out['holdout'] = trade_stats([t for t in trades if str(t['d']) >= HOLDOUT_START])
+    out['regimes'] = regime_stats(trades, regime_boundaries(long_bars)) if long_bars else []
+    out['long'] = trade_stats([t for t in trades if t['dir'] == 'L'])
+    out['short'] = trade_stats([t for t in trades if t['dir'] == 'S'])
+    rc = defaultdict(int)
+    for t in trades:
+        rc[t['r']] += 1
+    out['exit_reasons'] = dict(rc)
     return out

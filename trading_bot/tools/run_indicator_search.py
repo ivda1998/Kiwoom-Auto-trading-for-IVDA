@@ -39,8 +39,9 @@ STATE_PATH = os.path.join(DATA_DIR, "search_state.json")
 
 BATCH_SIZE = 300
 MIN_TRADES_FOR_LEADER = 200
-MIN_T_STAT = 2.0            # 전구간 거래당 수익률 t값 최소치
+MIN_T_STAT = 2.0            # 전구간 거래당 수익률 t값 최소치(바닥)
 MIN_HOLDOUT_TRADES = 60     # 홀드아웃 구간 최소 거래수
+MIN_PAIRED_T = 2.0          # Phase1(2026-10-08): 벤치마크 대비 '일자별 차이' t값 최소치
 DEPLOYED_DATE = "2026-09-29"     # 현재 라이브 배포판 적용일 (벤치마크 라벨용)
 
 # VM(.env + config.py)에 실제 배포된 값과 일치해야 함 — 어긋나면 탐색이 구버전 기준으로 비교하게 된다.
@@ -198,7 +199,22 @@ def load_state(all_bars, daily) -> dict:
     }
 
 
+def strip_trades_for_persist(state: dict):
+    """상태 JSON 비대화 방지 — 결과의 원시 거래리스트(paired-diff용)는 매 실행 재계산되므로
+    영속화하지 않는다. 벤치마크·best_found·리더보드 결과에서 모두 제거."""
+    def _strip(res):
+        if isinstance(res, dict):
+            res.pop("trades", None)
+    _strip((state.get("benchmark") or {}).get("result"))
+    bf = state.get("best_found")
+    if bf:
+        _strip(bf.get("result"))
+    for e in (state.get("leaderboard") or []):
+        _strip(e.get("result"))
+
+
 def save_state(state: dict):
+    strip_trades_for_persist(state)
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
@@ -259,46 +275,60 @@ def regime_majority_check(result: dict, bench_result: dict) -> bool:
 
 
 def is_new_leader(state: dict, result: dict) -> bool:
-    """3단 관문 판정 (2026-09-23 t값+홀드아웃 도입, 2026-09-29 국면분리 추가).
+    """관문 판정 (Phase1 개편 2026-10-08).
 
-    1단(전구간): 표본수 + 거래당 수익률 t값 — t값은 건수와 편차를 함께 반영하므로
-      '건수 적은데 승률만 높은 후보'가 자동으로 걸러진다.
-    2단(홀드아웃): 최근 구간에서도 벤치마크를 총손익·승률 양쪽에서 이겨야 한다.
-    3단(국면분리): 전체를 N_REGIMES 등분한 구간 중 과반에서 벤치마크를 이겨야 한다 —
-      1·2단만으로는 "최근 국면 의존" 후보를 걸러내지 못함이 실증됐다.
+    구 기준은 절대 총손익(net_pnl_krw)으로 '벤치마크 초과'를 strict `>`로만 봤다.
+    그러나 (1) 마진 없는 `>`는 0.01% 운-우위도 통과시키고, (2) 고원(plateau) 위에서
+    절대 총손익 argmax를 뽑으면 노이즈 좌표를 리더로 크라운한다. 또 (3) 리더는 발견시점
+    스냅샷으로 고정되는데 벤치는 매 실행 재채점돼 비교가 비대칭이었다.
 
-    구 기준(총손익 1순위 + 승률 최저조건)은 누적 1,695개 후보를 같은 1년 구간에
-    in-sample 채점한 탓에 과적합 후보를 걸러내지 못했다 — 재채점 결과 당시 리더보드
-    9개 중 홀드아웃 생존은 1개뿐이었다. 총손익은 이제 리더보드 순위에만 쓴다.
+    개편: '벤치마크와의 짝지은 차이 검정(paired_diff_stats)'으로 교체. 후보·벤치마크는
+    같은 종목·세션을 거래해 수익이 강상관이므로, 일자별 차이(diff=후보-벤치)의 t값이
+    '신뢰할 만큼 더 버는가'를 훨씬 민감·공정하게 판정한다. t≥2 요구가 곧 노이즈 대비 마진.
+    인컴번트도 '현재 데이터로 재채점'된 뒤 paired-t로 비교(드라이버가 재채점해 둠).
+    기본 관문(표본수·t바닥·홀드아웃 표본·국면 과반)은 유지. 유니버스-외 최종게이트(Phase4)는
+    드라이버 쪽에서 리더 후보가 나왔을 때만 별도로 건다.
     """
+    if not passes_core_gates(state, result):
+        return False
+    # 인컴번트(현재 데이터로 재채점됨)보다 벤치 대비 우위가 더 커야 교체.
+    cur_best = state.get("best_found")
+    if cur_best:
+        bench_tr = state["benchmark"]["result"].get("trades") or []
+        cur_tr = (cur_best.get("result") or {}).get("trades") or []
+        cur_pd = lab.paired_diff_stats(cur_tr, bench_tr)
+        if cur_pd["t"] >= result["paired_vs_bench"]["t"]:
+            return False
+    return True
+
+
+def passes_core_gates(state: dict, result: dict) -> bool:
+    """인컴번트 비교를 뺀 '벤치마크 대비 자격' 관문. is_new_leader와 '기존 리더 강등'
+    판정에 공용으로 쓴다. 통과 시 result에 paired_vs_bench(_hold)를 채워 넣는다."""
     bench = state["benchmark"]["result"]
-    bench_h = bench.get("holdout") or {}
+    bench_tr = bench.get("trades") or []
+    cand_tr = result.get("trades") or []
     h = result.get("holdout") or {}
     if result["n"] < MIN_TRADES_FOR_LEADER:
         return False
     if result.get("t_stat", 0.0) < MIN_T_STAT:
         return False
-    # 전구간(총손익) 관문 (2026-09-29 추가) — 홀드아웃/국면만 보면 refine 단계에서
-    # 수백~수천 개 근접 후보를 뒤지다 보니 "전구간은 벤치마크보다 못하지만 홀드아웃과
-    # 국면 과반만 우연히 이기는" 후보가 실제로 하나 나왔다(BB34/0.7/MA5-15/10:00,
-    # 전구간 t=3.94<4.19, 순익 373만<409만인데도 홀드아웃+국면3/4는 통과). 다중비교
-    # 노이즈이지 개선이 아니므로, 전구간에서도 벤치마크를 이겨야 한다는 조건을 추가.
-    if result.get("net_pnl_krw", 0.0) <= bench.get("net_pnl_krw", 0.0):
-        return False
     if h.get("n", 0) < MIN_HOLDOUT_TRADES:
-        return False
-    if h.get("win_rate", 0.0) < bench_h.get("win_rate", 0.0):
-        return False
-    if h.get("net_pnl_krw", 0.0) <= bench_h.get("net_pnl_krw", 0.0):
         return False
     if not regime_majority_check(result, bench):
         return False
-    # 기존 최고 후보와의 비교도 홀드아웃 성적으로 한다 (신뢰하는 근거가 그쪽이므로)
-    cur_best = state["best_found"]
-    if cur_best:
-        cur_h = cur_best["result"].get("holdout") or {}
-        if cur_h.get("net_pnl_krw", 0.0) >= h.get("net_pnl_krw", 0.0):
-            return False
+    # Phase1 핵심: 전구간, 벤치마크 대비 짝지은 차이가 유의하게 양(+)이어야 한다.
+    pd = lab.paired_diff_stats(cand_tr, bench_tr)
+    result["paired_vs_bench"] = pd  # 보고용
+    if pd["t"] < MIN_PAIRED_T:
+        return False
+    # 홀드아웃 구간에서도 벤치마크에 뒤지지 않을 것(paired-t ≥ 0).
+    hc = [t for t in cand_tr if str(t["d"]) >= lab.HOLDOUT_START]
+    hb = [t for t in bench_tr if str(t["d"]) >= lab.HOLDOUT_START]
+    pdh = lab.paired_diff_stats(hc, hb)
+    result["paired_vs_bench_hold"] = pdh
+    if pdh["t"] < 0.0:
+        return False
     return True
 
 
@@ -377,6 +407,17 @@ def main():
 
     state = load_state(all_bars, daily)
     state["run_count"] += 1
+
+    # Phase1: 인컴번트(기존 리더)를 현재 데이터로 재채점 → 벤치마크와 같은 선상에서 paired 비교.
+    # 재채점 후 새 기준(paired-t)을 못 넘으면 강등(노이즈 크라운으로 판명).
+    if state.get("best_found"):
+        try:
+            state["best_found"]["result"] = lab.evaluate_candidate(
+                state["best_found"]["candidate"], all_bars, daily)
+            if not passes_core_gates(state, state["best_found"]["result"]):
+                state["best_found"] = None
+        except Exception:
+            pass
 
     print(f"[3/5] phase={current_phase(state)} 큐={len(state['queue'])}건, 누적테스트={state['tested_count']}건")
     refill_queue_if_empty(state)

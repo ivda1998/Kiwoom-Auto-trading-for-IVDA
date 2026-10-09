@@ -31,6 +31,12 @@ CSV_LEVD = os.path.join(DATA_DIR, "index_lev_daily_master.csv")
 CSV_INV3 = os.path.join(DATA_DIR, "index_inv_3min_master.csv")
 STATE_PATH = os.path.join(DATA_DIR, "index_search_state.json")
 
+# Phase4(2026-10-08): 유니버스-외 '잠긴' 최종 게이트 — 코스닥 dual-ETF(탐색이 건드리지 않는
+# 독립 유니버스). read-only. 리더 후보가 나왔을 때만 GO/NO-GO로 평가(드물게).
+LOCKED_LEV3 = os.path.join(DATA_DIR, "kosdaq_lev_3min_master.csv")   # 233740 코스닥150레버리지
+LOCKED_INV3 = os.path.join(DATA_DIR, "kosdaq_inv_3min_master.csv")   # 251340 코스닥150선물인버스
+LOCKED_LEVD = os.path.join(DATA_DIR, "kosdaq_lev_daily_master.csv")
+
 BATCH_SIZE = 300
 DEPLOYED_DATE = "2026-10-07"   # 지수 전략 모의 활성화일
 
@@ -144,6 +150,30 @@ def fmt_candidate(c):
             f"SL{c['sl']*100:.1f}%/트레일{(c['trail_gap'] or 0)*100:.1f}% [{lm}]")
 
 
+def passes_locked_gate(candidate: dict) -> dict:
+    """Phase4: 유니버스-외(코스닥) 잠금 최종 게이트. 코스피 탐색의 다중검정에 한 번도
+    오염되지 않은 독립 유니버스에서 후보가 '전이(transfer)'되는지 GO/NO-GO로만 본다.
+    코스닥은 변동성이 커 t가 낮으므로 '벤치 초과'가 아니라 '방향·생존'으로 보정 판정:
+      전구간 net>0 + 홀드아웃 net>0 + 국면 과반 양(+) + 코스닥 벤치 대비 paired-t≥0.
+    read-only(탐색·튜닝에 절대 사용 안 함). 리더 후보일 때만 호출(드물게)."""
+    if not (os.path.exists(LOCKED_LEV3) and os.path.exists(LOCKED_INV3) and os.path.exists(LOCKED_LEVD)):
+        return {"available": False}
+    kl, kd = lab.load_master_data(LOCKED_LEV3, LOCKED_LEVD)
+    ksl = lab.load_short_lookup(LOCKED_INV3)
+    klt, kst = lab.detect_tick(LOCKED_LEV3), lab.detect_tick(LOCKED_INV3)
+    r = lab.evaluate_index_candidate(candidate, kl, ksl, kd, long_tick=klt, short_tick=kst)
+    kb = lab.evaluate_index_candidate(BENCHMARK_CANDIDATE, kl, ksl, kd, long_tick=klt, short_tick=kst)
+    pd = lab.paired_diff_stats(r.get("trades") or [], kb.get("trades") or [])
+    regs = r.get("regimes") or []
+    reg_pos = sum(1 for x in regs if x.get("net_pnl_krw", 0.0) > 0)
+    hnet = (r.get("holdout") or {}).get("net_ret", 0.0)
+    ok = (r.get("net_ret", 0.0) > 0 and hnet > 0
+          and reg_pos >= (len(regs) - 1 if regs else 1) and pd["t"] >= 0.0)
+    return {"available": True, "ok": bool(ok), "net": r.get("net_ret", 0.0),
+            "t": r.get("t_stat", 0.0), "hold_net": hnet,
+            "reg_pos": reg_pos, "reg_n": len(regs), "paired_t": pd["t"]}
+
+
 # ─────────────────────────────────────────
 # main
 # ─────────────────────────────────────────
@@ -166,6 +196,21 @@ def main():
 
     state = load_state(long_bars, short_lookup, daily, long_tick, short_tick)
     state["run_count"] += 1
+
+    # Phase1: 인컴번트(기존 리더)를 현재 데이터로 재채점 → 벤치마크와 같은 선상에서 paired 비교.
+    # 재채점 후 새 기준(paired-t)을 못 넘으면 강등(노이즈 크라운으로 판명).
+    demoted = None
+    if state.get("best_found"):
+        try:
+            state["best_found"]["result"] = lab.evaluate_index_candidate(
+                state["best_found"]["candidate"], long_bars, short_lookup, daily,
+                long_tick=long_tick, short_tick=short_tick)
+            if not sam.passes_core_gates(state, state["best_found"]["result"]):
+                demoted = state["best_found"]
+                state["best_found"] = None
+        except Exception:
+            pass
+
     print(f"[3/5] phase={current_phase(state)} 큐={len(state['queue'])}건, 누적테스트={state['tested_count']}건")
     refill_queue_if_empty(state)
 
@@ -174,6 +219,7 @@ def main():
 
     tested_today = 0
     new_leader = None
+    locked_reject = None   # Phase1 관문은 통과했으나 유니버스-외 전이에 실패해 보류된 후보
     for cand in batch:
         try:
             result = lab.evaluate_index_candidate(cand, long_bars, short_lookup, daily,
@@ -184,12 +230,21 @@ def main():
         state["tested_count"] += 1
         sam.update_leaderboard(state, cand, result)
         if sam.is_new_leader(state, result):
+            # Phase4: 유니버스-외(코스닥) 잠금 게이트 — 리더 후보일 때만 평가(드물게).
+            locked = passes_locked_gate(cand)
+            if locked.get("available"):
+                state["locked_gate_queries"] = state.get("locked_gate_queries", 0) + 1
+            if locked.get("available") and not locked.get("ok"):
+                locked_reject = {"candidate": cand, "result": result, "locked": locked}
+                continue   # 코스닥 전이 실패 → 리더로 승격하지 않음
             state["best_found"] = {"candidate": cand, "result": result,
-                                   "found_at": datetime.now().isoformat(), "reported": False}
+                                   "found_at": datetime.now().isoformat(), "reported": False,
+                                   "locked_gate": locked}
             new_leader = state["best_found"]
 
     advance_phase_if_needed(state)
     state["last_run_at"] = datetime.now().isoformat()
+    sam.strip_trades_for_persist(state)
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
     print(f"[4/5] 이번 회차 테스트 {tested_today}건, 누적 {state['tested_count']}건")
@@ -218,12 +273,37 @@ def main():
     if new_leader:
         c, r = new_leader["candidate"], new_leader["result"]
         rh = r.get("holdout") or {}
+        pv = r.get("paired_vs_bench") or {}
+        pvh = r.get("paired_vs_bench_hold") or {}
+        lk = new_leader.get("locked_gate") or {}
         lines += [
             "", "🎉 <b>벤치마크를 넘는 새 지수 후보!</b>", fmt_candidate(c),
             f"→ 전구간 {r['n']}건 승률{r['win_rate']*100:.1f}% 순익{r['net_ret']*100:+.1f}%"
             f"({r['net_pnl_krw']:+,.0f}원) t={r.get('t_stat',0):.2f}",
             f"→ 홀드아웃 {rh.get('n',0)}건 {rh.get('net_pnl_krw',0):+,.0f}원 t={rh.get('t_stat',0):.2f}",
-            "적용하려면 세션에서 \"적용해줘\"라고 하세요 (자동배포 안 함).",
+            f"→ 벤치 대비 짝지은차이: 전구간 t={pv.get('t',0):.2f} / 홀드 t={pvh.get('t',0):.2f} "
+            f"(일당 {pv.get('mean_krw',0):+,.0f}원)",
+        ]
+        if lk.get("available"):
+            lines.append(f"→ 🔒 코스닥 전이게이트 통과: net{lk.get('net',0)*100:+.0f}% 홀드{lk.get('hold_net',0)*100:+.0f}% "
+                         f"국면{lk.get('reg_pos',0)}/{lk.get('reg_n',0)} paired-t{lk.get('paired_t',0):+.2f}")
+        else:
+            lines.append("→ 🔒 코스닥 전이게이트: 데이터 없음(미평가) — 승격은 했으나 수동 확인 요망")
+        lines.append("적용하려면 세션에서 \"적용해줘\"라고 하세요 (자동배포 안 함).")
+    elif locked_reject:
+        c, lk = locked_reject["candidate"], locked_reject["locked"]
+        lines += [
+            "", "⚠️ <b>Phase1 관문 통과했으나 코스닥 전이 실패로 보류</b>", fmt_candidate(c),
+            f"→ 코스닥: net{lk.get('net',0)*100:+.0f}% 홀드{lk.get('hold_net',0)*100:+.0f}% "
+            f"국면{lk.get('reg_pos',0)}/{lk.get('reg_n',0)} paired-t{lk.get('paired_t',0):+.2f} "
+            f"→ 유니버스-외 전이 안 됨(과적합 의심), 리더 승격 안 함.",
+        ]
+    if demoted:
+        dp = (demoted.get("result") or {}).get("paired_vs_bench") or {}
+        lines += [
+            "", "📉 <b>기존 리더 강등</b> — 새 기준(paired-t)에서 벤치마크 대비 유의성 상실",
+            f"{fmt_candidate(demoted['candidate'])} → 벤치 대비 paired-t={dp.get('t',0):.2f}(<{sam.MIN_PAIRED_T}) "
+            f"= 고원 위 노이즈로 판명, 현행 벤치 유지.",
         ]
 
     print("[5/5] 텔레그램 전송 중...")
@@ -235,6 +315,7 @@ def main():
 
     if new_leader:
         state["best_found"]["reported"] = True
+        sam.strip_trades_for_persist(state)
         with open(STATE_PATH, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
 

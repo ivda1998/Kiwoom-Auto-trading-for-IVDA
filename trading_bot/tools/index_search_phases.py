@@ -48,6 +48,14 @@ def gen_exit_grid_index():
         for sl in [0.02, 0.025, 0.03, 0.035, 0.04]:
             for trail in [0.01, 0.015, 0.02, 0.025, 0.03, None]:
                 out.append(sp._wrap(kind, params, fm, sm, es, 'xidx', sl=sl, trail_gap=trail))
+    # 신규 청산 메커니즘 변형 (지수 벤치 BB29/1.0 진입 고정)
+    bk, bp, bfm, bsm, bes = bases[0]
+    for ts in [20, 40, 60]:       # 최대보유(3분봉 → 1/2/3시간)
+        out.append(sp._wrap(bk, bp, bfm, bsm, bes, 'xidx', sl=0.025, trail_gap=0.015, time_stop_bars=ts))
+    for be in [0.01, 0.015, 0.02]:  # breakeven 손절상향
+        out.append(sp._wrap(bk, bp, bfm, bsm, bes, 'xidx', sl=0.025, trail_gap=0.015, breakeven_trigger=be))
+    for ta in [0.005, 0.01, 0.02]:  # 트레일 발동문턱
+        out.append(sp._wrap(bk, bp, bfm, bsm, bes, 'xidx', sl=0.025, trail_gap=0.015, trail_activate=ta))
     return out
 
 
