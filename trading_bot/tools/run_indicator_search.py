@@ -42,6 +42,8 @@ MIN_TRADES_FOR_LEADER = 200
 MIN_T_STAT = 2.0            # 전구간 거래당 수익률 t값 최소치(바닥)
 MIN_HOLDOUT_TRADES = 60     # 홀드아웃 구간 최소 거래수
 MIN_PAIRED_T = 2.0          # Phase1(2026-10-08): 벤치마크 대비 '일자별 차이' t값 최소치
+RECENT_N = 60               # 벤치 건강검진: 최근창(벤치 거래) 표본 크기
+BENCH_HEALTH_CSV = os.path.join(DATA_DIR, "bench_health_samsung.csv")
 DEPLOYED_DATE = "2026-09-29"     # 현재 라이브 배포판 적용일 (벤치마크 라벨용)
 
 # VM(.env + config.py)에 실제 배포된 값과 일치해야 함 — 어긋나면 탐색이 구버전 기준으로 비교하게 된다.
@@ -217,6 +219,27 @@ def save_state(state: dict):
     strip_trades_for_persist(state)
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def append_bench_health_csv(path: str, health: dict, data_end: str):
+    """벤치 건강검진 시계열 1행 append (대시보드 쇠퇴추세용). 실패해도 탐색은 계속."""
+    cols = ["ts", "data_end", "full_n", "full_t", "full_net",
+            "hold_n", "hold_t", "hold_net", "rec_n", "rec_t", "rec_net", "alerts"]
+    try:
+        new = not os.path.exists(path)
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(cols)
+            w.writerow([
+                datetime.now().isoformat(timespec="seconds"), data_end,
+                health['full_n'], f"{health['full_t']:.4f}", f"{health['full_net']:.6f}",
+                health['hold_n'], f"{health['hold_t']:.4f}", f"{health['hold_net']:.6f}",
+                health['rec_n'], f"{health['rec_t']:.4f}", f"{health['rec_net']:.6f}",
+                ";".join(health['alerts']),
+            ])
+    except Exception as e:
+        print(f"  (bench_health csv 실패: {e})", file=sys.stderr)
 
 
 def current_phase(state: dict) -> str:
@@ -442,6 +465,11 @@ def main():
             }
             new_leader_this_run = state["best_found"]
 
+    # 벤치 절대성능 건강검진 — 선정기 사각지대(벤치 자체 쇠퇴) 감시.
+    # save_state 전에 호출해야 bench trades(최근창 계산용)가 아직 붙어 있다.
+    health = lab.bench_health(state["benchmark"]["result"], recent_n=RECENT_N, min_full_t=MIN_T_STAT)
+    append_bench_health_csv(BENCH_HEALTH_CSV, health, all_bars[-1]['d'])
+
     advance_phase_if_needed(state)
     state["last_run_at"] = datetime.now().isoformat()
     save_state(state)
@@ -463,6 +491,14 @@ def main():
         f"승률{bench_h.get('win_rate', 0)*100:.1f}% {bench_h.get('net_pnl_krw', 0):+,.0f}원 "
         f"t={bench_h.get('t_stat', 0):.2f}",
     ]
+    htag = "⚠️" if health['alerts'] else "✅"
+    lines.append(
+        f"{htag} 벤치 건강검진: 최근{health['rec_n']}건 net{health['rec_net']*100:+.1f}%·t{health['rec_t']:.2f}"
+        f" | 전구간 t{health['full_t']:.2f} | 홀드 t{health['hold_t']:.2f}"
+    )
+    if health['alerts']:
+        lines.append("   └ 🔻<b>벤치 쇠퇴경보</b>: " + " · ".join(health['alerts'])
+                     + " (교체/중단은 사람 판단 — 자동개입 안 함)")
     if live_wr is not None:
         lines.append(f"실거래 성적({DEPLOYED_DATE}~): {live_stats['n']}건 중 승률{live_wr:.1f}%")
 

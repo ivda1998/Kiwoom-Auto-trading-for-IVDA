@@ -546,6 +546,42 @@ def paired_diff_stats(a_trades: list, b_trades: list) -> dict:
             't': mean / (sd / (n ** 0.5)) if sd > 0 else 0.0}
 
 
+def bench_health(bench_result: dict, recent_n: int = 60, min_full_t: float = 2.0) -> dict:
+    """벤치마크 '절대성능' 건강검진 — 선정기(벤치 대비 상대비교)의 사각지대인
+    '벤치 자체의 쇠퇴'를 감시한다. 최근창 열화(벤치 거래의 최근 recent_n건) + 절대바닥
+    (전구간 t, 홀드아웃 t)을 함께 본다. alerts가 비어있지 않으면 쇠퇴 경보.
+    라이브 자동개입은 하지 않는다(보고·대시보드·사람 판단용).
+    bench_result는 trades가 아직 붙어 있어야 한다(strip_trades 이전에 호출)."""
+    full_n = bench_result.get('n', 0)
+    full_t = bench_result.get('t_stat', 0.0)
+    full_net = bench_result.get('net_ret', 0.0)
+    h = bench_result.get('holdout') or {}
+    hold_n, hold_t, hold_net = h.get('n', 0), h.get('t_stat', 0.0), h.get('net_ret', 0.0)
+    trs = sorted((bench_result.get('trades') or []), key=lambda t: str(t['d']))
+    rs = trade_stats(trs[-recent_n:])
+    rec_n, rec_t, rec_net = rs['n'], rs['t_stat'], rs['net_ret']
+    alerts = []
+    if full_t < min_full_t:
+        alerts.append(f"전구간t {full_t:.2f}<{min_full_t:g}")
+    if hold_t < 0.0:
+        alerts.append(f"홀드아웃t {hold_t:.2f}<0")
+    if rec_net <= 0.0:
+        alerts.append(f"최근{rec_n}건 net{rec_net * 100:+.1f}%≤0")
+    else:
+        # 최근창이 아직 +지만 '건당수익률'이 전구간의 절반 미만이면 상대 열화 경보.
+        # (t값은 분산 0일 때 0이 되는 약점이 있어, 더 견고한 건당수익 비율로 판정)
+        full_avg = full_net / full_n if full_n else 0.0
+        rec_avg = rec_net / rec_n if rec_n else 0.0
+        if full_avg > 0 and rec_avg < full_avg * 0.5:
+            alerts.append(f"최근 건당{rec_avg * 100:+.2f}%≪전구간 {full_avg * 100:+.2f}%(절반↓)")
+    return {
+        'full_n': full_n, 'full_t': full_t, 'full_net': full_net,
+        'hold_n': hold_n, 'hold_t': hold_t, 'hold_net': hold_net,
+        'rec_n': rec_n, 'rec_t': rec_t, 'rec_net': rec_net,
+        'alerts': alerts, 'ok': not alerts,
+    }
+
+
 def equity_stats(rets: list) -> dict:
     """거래(또는 베팅) 수익 시퀀스 → 자산곡선 지표(가산식 누적합 기준).
     사이징 평가용 — total(총수익률), mdd(최대낙폭), sharpe(거래당×√n=t스케일), calmar(total/mdd)."""

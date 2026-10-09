@@ -36,6 +36,7 @@ STATE_PATH = os.path.join(DATA_DIR, "index_search_state.json")
 LOCKED_LEV3 = os.path.join(DATA_DIR, "kosdaq_lev_3min_master.csv")   # 233740 코스닥150레버리지
 LOCKED_INV3 = os.path.join(DATA_DIR, "kosdaq_inv_3min_master.csv")   # 251340 코스닥150선물인버스
 LOCKED_LEVD = os.path.join(DATA_DIR, "kosdaq_lev_daily_master.csv")
+BENCH_HEALTH_CSV = os.path.join(DATA_DIR, "bench_health_index.csv")   # 벤치 건강검진 시계열
 
 BATCH_SIZE = 300
 DEPLOYED_DATE = "2026-10-07"   # 지수 전략 모의 활성화일
@@ -244,6 +245,9 @@ def main():
 
     advance_phase_if_needed(state)
     state["last_run_at"] = datetime.now().isoformat()
+    # 벤치 절대성능 건강검진 — strip(=trades 제거) 전에 계산해야 최근창 산출 가능.
+    health = lab.bench_health(state["benchmark"]["result"], recent_n=sam.RECENT_N, min_full_t=sam.MIN_T_STAT)
+    sam.append_bench_health_csv(BENCH_HEALTH_CSV, health, long_bars[-1]['d'])
     sam.strip_trades_for_persist(state)
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
@@ -270,6 +274,14 @@ def main():
         f"({bench_lo['net_pnl_krw']:+,.0f}원) t={bench_lo.get('t_stat',0):.2f} "
         f"→ {'숏이 기여' if bench['net_pnl_krw']>bench_lo['net_pnl_krw'] else '롱온리가 우위(숏 불필요)'}",
     ]
+    htag = "⚠️" if health['alerts'] else "✅"
+    lines.append(
+        f"{htag} 벤치 건강검진: 최근{health['rec_n']}건 net{health['rec_net']*100:+.1f}%·t{health['rec_t']:.2f}"
+        f" | 전구간 t{health['full_t']:.2f} | 홀드 t{health['hold_t']:.2f}"
+    )
+    if health['alerts']:
+        lines.append("   └ 🔻<b>벤치 쇠퇴경보</b>: " + " · ".join(health['alerts'])
+                     + " (교체/중단은 사람 판단 — 자동개입 안 함)")
     if new_leader:
         c, r = new_leader["candidate"], new_leader["result"]
         rh = r.get("holdout") or {}
