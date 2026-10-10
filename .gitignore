@@ -19,3 +19,4 @@ __pycache__/
 # Configs
 credentials.json
 token.json
+/.claude/scheduled_tasks.lock
