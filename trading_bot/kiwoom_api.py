@@ -53,7 +53,9 @@ class KiwoomAPI:
     _WARN_THRESHOLDS = {1500, 1600, 1650, 1680}
 
     # 토큰 캐시 파일 경로 (재시작 시 재사용)
-    _TOKEN_CACHE = os.path.join(os.path.dirname(__file__), "data", ".kiwoom_token_cache.json")
+    # 인스턴스 데이터 폴더(config.DATA_DIR) 기준 — 기본값은 기존과 같은 <코드>/data.
+    # 실계좌 지수 인스턴스는 BOT_DATA_DIR로 분리돼 모의 봇 토큰을 덮어쓰지 않는다.
+    _TOKEN_CACHE = os.path.join(config.DATA_DIR, ".kiwoom_token_cache.json")
 
     def __init__(self):
         # ── REST ──────────────────────────────────────

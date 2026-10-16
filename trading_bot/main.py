@@ -111,19 +111,23 @@ class TradingBot:
         self.harness.register_hook(self.market_filter_hook)
 
         # 5. 에이전트 등록
+        # 객체는 항상 만들되(텔레그램 명령·상태 출력이 속성을 참조), INDEX_ONLY_MODE면
+        # 지수 에이전트만 하네스에 등록한다. 미등록 에이전트는 TICK/CANDLE 이벤트를 받지
+        # 못하므로 매매 자체가 불가능 — 실계좌 다른 보유종목 보호의 1차 격리선.
+        self._index_only = getattr(config, "INDEX_ONLY_MODE", False)
         self.agent = BreakoutTradingAgent()
-        self.harness.register_agent(self.agent)
-
         self.leverage_agent = LeverageInverseAgent()
-        self.harness.register_agent(self.leverage_agent)
-
         self.leverage_index_agent = LeverageIndexAgent()
-        self.harness.register_agent(self.leverage_index_agent)
-
         self.personal_invest_agent = PersonalInvestAgent()
-        self.harness.register_agent(self.personal_invest_agent)
-
         self.api_usage_agent = ApiUsageAgent(self.kiwoom, self.notifier)
+
+        if self._index_only:
+            self.harness.register_agent(self.leverage_index_agent)
+        else:
+            self.harness.register_agent(self.agent)
+            self.harness.register_agent(self.leverage_agent)
+            self.harness.register_agent(self.leverage_index_agent)
+            self.harness.register_agent(self.personal_invest_agent)
         self.harness.register_agent(self.api_usage_agent)
 
         # 6. 하네스 런타임 공유 컨텍스트 설정
@@ -209,8 +213,14 @@ class TradingBot:
         # 자본 초기화
         self.risk.initialize()
 
+        if self._index_only:
+            logger.info("[Bot] INDEX_ONLY_MODE — 지수 레버리지 전략만 가동 "
+                        "(돌파·삼성·개별주·VM picks·스캔·조건검색·보유종목 동기화 비활성)")
+            if not getattr(config, "LEVERAGE_INDEX_ENABLED", False):
+                logger.error("[Bot] INDEX_ONLY_MODE인데 LEVERAGE_INDEX_ENABLED=false — 가동할 전략이 없음")
+
         # VM 포지션 영속 복구 (재시작 후 오버나잇 포지션 복원)
-        if config.VM_MODE:
+        if config.VM_MODE and not self._index_only:
             self.vm_manager.load()
             for vm_pos in list(self.vm_manager.get_all().values()):
                 _code, _name = vm_pos.code, vm_pos.name
@@ -226,7 +236,10 @@ class TradingBot:
                 logger.info(f"[Bot] VM 포지션 복구: {_name}({_code}) {vm_pos.qty}주")
 
         # 기존 보유 종목 동기화 (execution_skill 전용 — vm_manager 종목 제외)
-        self._sync_existing_positions()
+        # INDEX_ONLY: 절대 실행 금지 — 실계좌 개인 보유분이 돌파 전략에 편입돼 손절·장마감
+        # 청산 대상이 된다. 지수 에이전트는 restore_position에서 자기 종목만 직접 대조한다.
+        if not self._index_only:
+            self._sync_existing_positions()
 
         if self._auto_mode or config.VM_MODE:
             logger.info(f"[Bot] 기본 진입 전략 사용: {getattr(config, 'ENTRY_STRATEGY_TYPE', 3)}번")
@@ -242,14 +255,16 @@ class TradingBot:
             self._choose_condition()
 
         # 레버리지-인버스 전략: 삼성전자 + ETF 구독
-        self._init_leverage_strategy()
+        if not self._index_only:
+            self._init_leverage_strategy()
         self._init_leverage_index_strategy()
 
-        # 후보 종목 초기 스캔 (일봉 기준)
-        self._run_initial_scan()
+        if not self._index_only:
+            # 후보 종목 초기 스캔 (일봉 기준)
+            self._run_initial_scan()
 
-        # 장 중 실시간 조건식 모니터링 시작 (ka10173)
-        self._start_condition_polling()
+            # 장 중 실시간 조건식 모니터링 시작 (ka10173)
+            self._start_condition_polling()
 
         self._running = True
         logger.info("[Bot] 매매 대기 중...")
@@ -302,7 +317,7 @@ class TradingBot:
 
         ag  = self.leverage_index_agent
         lev = ag.LEVERAGE_CODE   # 122630 = 롱 ETF 겸 신호원
-        inv = ag.INVERSE_CODE    # 252670 = 숏 ETF
+        inv = ag.INVERSE_CODE    # 114800 = 숏 ETF (KODEX 인버스 1x)
 
         # 신호원(롱 ETF 자체) 분봉 빌더 — 공식 분봉(api_feed)만 사용
         lev_interval = getattr(config, "LEVERAGE_INDEX_CANDLE_INTERVAL", 3)
@@ -526,33 +541,51 @@ class TradingBot:
             logger.info(f"[Bot] 후보 종목 스캔 (장 중 실행 {now_hm} | 일봉 기준 — 오늘 장 중 데이터 포함)")
         else:
             logger.info(f"[Bot] 후보 종목 스캔 (장 시작 전 {now_hm} | 전일 종가 기준)")
-        
-        new_cands = self.scanner.run_scan()
-        self.scanner.print_summary()
 
-        existing_codes = {c["code"] for c in self._candidates}
-        for c in new_cands:
-            code = c["code"]
-            if code not in existing_codes:
-                self._candidates.append(c)
-                # 에이전트 내 전략 종목 등록
-                self.agent.strategy.init_stock(code, name=c["name"], high_20=c.get("high_20", 0), high_60=c.get("high_60", 0))
-                # 분봉 데이터 초기화
-                self.market_data_skill.init_stock(
-                    code,
-                    on_candle_close=lambda candle, _code=code: self.harness.broadcast_event("CANDLE", candle)
-                )
-                if not config.IS_SIMULATION:
-                    self.kiwoom.subscribe_realtime(code)
-                # 지정가 분할매수 발주 (VM picks 전용)
-                if config.VM_MODE and getattr(config, "VM_PICKS_ENABLED", True):
-                    _vm_conf = config.get_custom_targets().get(code)
-                    if _vm_conf:
-                        self.agent._place_vm_limit_orders(code, _vm_conf, self.vm_manager, self.kiwoom, self.notifier)
-                logger.info(f"[Bot] 구독 시작: {c['name']}({code})")
+        # 초기 스캔은 백그라운드 스레드로 실행한다. 과거엔 run() 안에서 동기 실행돼
+        # ka10099 전체시장 폴백(수십 초~수 분)이 _main_loop 시작을 막았고, 그동안
+        # 핵심심볼 분봉 refresh가 못 돌아 /pos·/lev가 '어제 마감' 데이터를 출력했다
+        # (2026-10-13 개장 23분 지연 관측). 비동기화하면 메인 루프가 09:00에 바로
+        # 돌며 오늘봉을 즉시 갱신한다. 후보등록·지정가발주 경로는 _do_rescan이
+        # 이미 장중 데몬 스레드에서 동일하게 수행 중이라 동시성 표면이 늘지 않는다.
+        if getattr(self, "_rescan_in_progress", False):
+            logger.info("[Bot] 초기 스캔 생략 — 재스캔 이미 진행 중")
+            return
 
-        self._last_scan_time = time.time()
-        self._print_status_board()
+        def _do_initial_scan():
+            self._rescan_in_progress = True
+            try:
+                new_cands = self.scanner.run_scan()
+                self.scanner.print_summary()
+
+                existing_codes = {c["code"] for c in self._candidates}
+                for c in new_cands:
+                    code = c["code"]
+                    if code not in existing_codes:
+                        self._candidates.append(c)
+                        # 에이전트 내 전략 종목 등록
+                        self.agent.strategy.init_stock(code, name=c["name"], high_20=c.get("high_20", 0), high_60=c.get("high_60", 0))
+                        # 분봉 데이터 초기화
+                        self.market_data_skill.init_stock(
+                            code,
+                            on_candle_close=lambda candle, _code=code: self.harness.broadcast_event("CANDLE", candle)
+                        )
+                        if not config.IS_SIMULATION:
+                            self.kiwoom.subscribe_realtime(code)
+                        # 지정가 분할매수 발주 (VM picks 전용)
+                        if config.VM_MODE and getattr(config, "VM_PICKS_ENABLED", True):
+                            _vm_conf = config.get_custom_targets().get(code)
+                            if _vm_conf:
+                                self.agent._place_vm_limit_orders(code, _vm_conf, self.vm_manager, self.kiwoom, self.notifier)
+                        logger.info(f"[Bot] 구독 시작: {c['name']}({code})")
+
+                self._last_scan_time = time.time()
+                self._print_status_board()
+            finally:
+                self._rescan_in_progress = False
+
+        import threading as _threading
+        _threading.Thread(target=_do_initial_scan, name="initial-scan", daemon=True).start()
 
     # ─────────────────────────────────────────
     # 장 중 조건식 실시간 폴링 (ka10173)
@@ -594,6 +627,12 @@ class TradingBot:
     # 일괄 청산
     # ─────────────────────────────────────────
     def _clear_all_positions(self, reason: str = "일괄청산"):
+        if getattr(self, "_index_only", False):
+            # 2차 격리선: 지수 전용 인스턴스는 돌파/VM 포지션을 가지지 않는다. 혹시라도
+            # 무언가 편입됐더라도 실계좌 개인 보유분을 일괄 매도하지 않도록 차단한다.
+            # 지수 포지션 청산은 /levidx exit 또는 에이전트 EOD 로직으로만 한다.
+            logger.warning(f"[Bot] INDEX_ONLY — 일괄청산({reason}) 생략. 지수 청산은 /levidx exit 사용")
+            return
         logger.info(f"[Bot] 전량 청산 시작: {reason}")
         positions = self.execution_skill.get_all_positions()
 
@@ -922,7 +961,7 @@ class TradingBot:
                     break
 
                 # VM 매수 대기열 + 미체결 fill 폴백 처리 (60초 간격)
-                if config.VM_MODE and now_ts - self._last_queue_check >= 60:
+                if config.VM_MODE and not self._index_only and now_ts - self._last_queue_check >= 60:
                     self._last_queue_check = now_ts
                     self._process_vm_buy_queue()
                     # 모의투자: 시뮬 폴링 TICK → _handle_vm_tick이 pending fill 처리하므로 중복 API 호출 생략
@@ -953,7 +992,7 @@ class TradingBot:
                             target_codes + [ag.SAMSUNG_CODE, ag.LEVERAGE_CODE, ag.INVERSE_CODE]
                         ))
 
-                    # 지수 레버리지 전략 종목 추가 (신호원/롱 122630 + 숏 252670)
+                    # 지수 레버리지 전략 종목 추가 (신호원/롱 122630 + 숏 114800)
                     if hasattr(self, "leverage_index_agent") and getattr(config, "LEVERAGE_INDEX_ENABLED", False):
                         iag = self.leverage_index_agent
                         target_codes = list(dict.fromkeys(
@@ -1020,7 +1059,7 @@ class TradingBot:
 
                 # ── 삼성전자 신호 분봉: ka10080 갱신 (실전/시뮬 공용, 레버리지 전략 독립 블록) ──
                 # 봉은 API 공식 분봉만 사용 (api_feed=True 빌더). 새 봉이 기대되는 시점에만 폴링.
-                if self._in_trade_hours() and hasattr(self, "leverage_agent"):
+                if self._in_trade_hours() and hasattr(self, "leverage_agent") and not self._index_only:
                     last_refresh = self._last_sim_poll.get("005930", 0.0)
                     if now_ts - last_refresh >= 30:  # 최소 30초 간격
                         market_data = self.harness.skills.get("market_data")
@@ -1074,9 +1113,35 @@ class TradingBot:
                                         f"[MarketData] 지수레버리지 {sig_code} 분봉 갱신 실패 → 30초 후 재시도"
                                     )
 
+                # ── 지수 전용 인스턴스: 보유 포지션 백업 시세 폴링 ──
+                # 실계좌는 SL/트레일 감시가 WS 틱에만 의존하는데 WS 실계좌 경로는 아직 실측
+                # 검증 전이다. WS가 조용히 끊겨도 손절 감시가 사라지지 않도록 보유 중일 때만
+                # 20초마다 REST 현재가를 틱으로 주입한다(모의 지수전용이면 이게 유일한 틱원).
+                # 중복 틱은 무해 — 청산은 에이전트 _order_lock으로 직렬화돼 한 번만 나간다.
+                if self._index_only and self._in_trade_hours():
+                    _ipos = getattr(self.leverage_index_agent, "_position", None)
+                    if _ipos:
+                        _bk_code = _ipos["code"]
+                        _bk_key  = f"{_bk_code}_backup_tick"
+                        if now_ts - self._last_sim_poll.get(_bk_key, 0.0) >= 20:
+                            self._last_sim_poll[_bk_key] = now_ts
+                            try:
+                                _info = self.kiwoom.get_stock_info(_bk_code, fast=True)
+                                if _info and _info.get("current_price", 0) > 0:
+                                    self.harness._on_tick({
+                                        "code":   _bk_code,
+                                        "price":  _info["current_price"],
+                                        "volume": 0,
+                                        "time":   datetime.now().strftime("%H%M%S"),
+                                    })
+                            except Exception as _e:
+                                logger.warning(f"[Bot] 지수 백업 시세 조회 실패({_bk_code}): {_e}")
+
                 # 수동 강제청산 확인
+                # (INDEX_ONLY는 모의 봇과 작업폴더를 공유하므로 force_sell.txt/change_condition.txt를
+                #  건드리지 않는다 — 이 파일들은 모의 봇 제어용으로 남겨둔다)
                 import os
-                if os.path.exists("force_sell.txt"):
+                if not self._index_only and os.path.exists("force_sell.txt"):
                     logger.warning("[Bot] 수동 강제청산 명령어 감지 (force_sell.txt)")
                     self._clear_all_positions(reason="수동강제청산")
                     try:
@@ -1085,7 +1150,7 @@ class TradingBot:
                         logger.error(f"[Bot] force_sell.txt 삭제 실패: {e}")
 
                 # 수동 검색식 변경 감지
-                if os.path.exists("change_condition.txt"):
+                if not self._index_only and os.path.exists("change_condition.txt"):
                     try:
                         with open("change_condition.txt", "r", encoding="utf-8") as f:
                             new_cond_name = f.read().strip()
@@ -1097,7 +1162,7 @@ class TradingBot:
                         logger.error(f"[Bot] 조건식 변경 실패: {e}")
 
                 # vm_picks.json 변경 감지 및 신규 후보 등록 (30초 간격)
-                if config.VM_MODE and now_ts - self._last_vm_picks_check >= 30:
+                if config.VM_MODE and not self._index_only and now_ts - self._last_vm_picks_check >= 30:
                     self._last_vm_picks_check = now_ts
                     self._reload_vm_picks_if_changed()
 
@@ -1110,7 +1175,9 @@ class TradingBot:
                     # 폴링 쓰레드가 죽었으면 자동 재시작
                     self.notifier.ensure_polling()
 
-                wait_time = 5 if config.IS_SIMULATION else 60
+                # 실계좌 60초 주기는 3분봉 신호 주입(due 체크)을 최대 60초 늦춘다 — 지수 전용은
+                # 5초로. 분봉 refresh·백업틱은 각자 시간 게이트가 있어 호출수는 늘지 않는다.
+                wait_time = 5 if (config.IS_SIMULATION or self._index_only) else 60
                 self._stop_event.wait(timeout=wait_time)
 
         except KeyboardInterrupt:
@@ -1126,7 +1193,9 @@ class TradingBot:
 
         logger.info("[Bot] 장 종료 처리 시작")
 
-        if force_sell:
+        # INDEX_ONLY: 돌파/VM 장마감 강제청산 루프를 돌리지 않는다(실계좌 개인 보유분 보호).
+        # 지수 포지션은 에이전트 FORCE_EXIT(15:20)가 이미 처리한다.
+        if force_sell and not getattr(self, "_index_only", False):
             custom_targets = config.get_custom_targets()
             today_dt = datetime.now()
 
@@ -1183,6 +1252,8 @@ class TradingBot:
 
             # VM 매수 대기열 초기화
             self.harness.get_context()["vm_buy_queue"] = []
+        elif getattr(self, "_index_only", False):
+            logger.info("[Bot] INDEX_ONLY — 돌파/VM 장마감 청산 생략 (지수는 에이전트 EOD가 처리)")
         else:
             logger.info("[Bot] 포지션 유지 (사용자 중단으로 인한 강제청산 생략)")
 
@@ -1462,7 +1533,7 @@ class TradingBot:
                 pnl_idx, rate_idx = _net_pnl(idx_pos["entry_price"], cur_idx, idx_pos["qty"], is_etf=True)
                 total_unreal += pnl_idx
                 emoji = "▲" if pnl_idx >= 0 else "▼"
-                dir_label = "레버리지(롱)" if idx_pos["direction"] == "LEVERAGE" else "인버스2X(숏)"
+                dir_label = "레버리지(롱)" if idx_pos["direction"] == "LEVERAGE" else "인버스(숏)"
                 flu_str = f" {flu_idx:+.2f}%" if flu_idx is not None else ""
                 peak = idx_pos.get("peak_ret", 0.0)
                 lines.append(
@@ -2361,7 +2432,7 @@ class TradingBot:
                 pnl_rate = (cur - pos["entry_price"]) / pos["entry_price"] if pos["entry_price"] else 0
                 pnl_amt  = (cur - pos["entry_price"]) * pos["qty"]
                 emoji    = "▲" if pnl_amt >= 0 else "▼"
-                dir_lbl  = "레버리지(롱)" if pos["direction"] == "LEVERAGE" else "인버스2X(숏)"
+                dir_lbl  = "레버리지(롱)" if pos["direction"] == "LEVERAGE" else "인버스(숏)"
                 lines += [
                     f"\n{emoji} <b>{pos['name']} ({pos['code']})</b> [{dir_lbl}]",
                     f"수량: {pos['qty']}주 | 진입: {pos['entry_price']:,}원 | 현재: {cur:,}원",

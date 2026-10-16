@@ -470,7 +470,12 @@ class LeverageInverseAgent(BaseAgent):
             return
 
         amount = getattr(config, "LEVERAGE_AMOUNT", 500_000)
-        qty    = max(1, amount // price)
+        # 단일종목 레버리지 ETF 최소 매매단위(2026-11~ 20주). 배수 수량은 시행 전에도 유효.
+        lot    = max(1, int(getattr(config, "LEVERAGE_LOT_SIZE", 20)))
+        qty    = (int(amount) // int(price)) // lot * lot
+        if qty <= 0:
+            logger.warning(f"[LeverageAgent] {etf_code} 매매단위 {lot}주×{price:,}원 > 회당금액 {amount:,}원 → 진입 보류")
+            return
 
         ret, ord_no = harness.kiwoom.send_order(
             order_name=f"LEV_{direction}_{etf_code}",
@@ -655,6 +660,9 @@ class LeverageInverseAgent(BaseAgent):
         code  = acct["code"]
         qty   = int(acct["qty"])
         entry = float(acct.get("entry_price") or 0)
+        lot   = max(1, int(getattr(config, "LEVERAGE_LOT_SIZE", 20)))
+        if qty % lot:
+            logger.warning(f"[LeverageAgent] {code} 보유 {qty}주가 매매단위 {lot}주 배수가 아님 → 청산 주문 거부 가능, 단주는 수동 정리 필요")
 
         if persisted and persisted.get("code") == code:
             pos = dict(persisted)

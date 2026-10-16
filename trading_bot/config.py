@@ -4,7 +4,10 @@ import os as _os
 _BASE_DIR = _os.path.dirname(_os.path.abspath(__file__))
 
 # .env 파일이 존재하는 경우 자동으로 os.environ에 로드
-_env_path = _os.path.join(_BASE_DIR, ".env")
+# BOT_ENV_FILE(프로세스 환경변수, systemd에서 지정)로 다른 env 파일을 쓸 수 있다 —
+# 같은 코드 폴더에서 두 번째 인스턴스(지수 전용 실계좌)를 띄우기 위함. 아래 로더는
+# os.environ을 덮어쓰므로, 인스턴스 분리는 반드시 env 파일 단위로 해야 한다.
+_env_path = _os.environ.get("BOT_ENV_FILE") or _os.path.join(_BASE_DIR, ".env")
 if _os.path.exists(_env_path):
     try:
         with open(_env_path, "r", encoding="utf-8") as _f:
@@ -300,6 +303,7 @@ LEVERAGE_ETF_CODE     = "0193W0"   # KODEX 삼성전자단일종목레버리지
 INVERSE_ETF_CODE      = "0193L0"   # PLUS 삼성전자단일종목인버스2x
 LEVERAGE_SAMSUNG_CODE = "005930"   # 신호원 종목
 LEVERAGE_AMOUNT       = int(_os.environ.get("LEVERAGE_AMOUNT", "2000000"))  # 회당 투자금
+LEVERAGE_LOT_SIZE     = int(_os.environ.get("LEVERAGE_LOT_SIZE", "20"))     # 단일종목 레버리지 최소 매매단위(2026-11~ 20주)
 LEVERAGE_SL_RATE      = float(_os.environ.get("LEVERAGE_SL_RATE", "0.025"))  # ETF 손절 -2.5%
 LEVERAGE_TP_RATE      = float(_os.environ.get("LEVERAGE_TP_RATE", "0.040"))  # ETF 익절 +4.0% (2단계 트레일링 활성 시 미사용, 레거시)
 LEVERAGE_TRAIL_GAP    = float(_os.environ.get("LEVERAGE_TRAIL_GAP", "0.015"))  # 레거시 단일 트레일링 폭 (2단계 트레일링으로 대체됨, 미사용)
@@ -336,8 +340,12 @@ LEVERAGE_BB_MULT      = float(_os.environ.get("LEVERAGE_BB_MULT", "0.8"))    # �
 # 기본 비활성(LEVERAGE_INDEX_ENABLED=false) — 승인/배포 시 .env에서 켠다.
 # ─────────────────────────────────────────
 LEVERAGE_INDEX_ENABLED       = _os.environ.get("LEVERAGE_INDEX_ENABLED", "false").lower() == "true"
+# 지수 전용 인스턴스 모드 — 지수 에이전트만 하네스에 등록하고 돌파·삼성·개별주·VM picks·
+# 스캐너·조건검색·보유종목 동기화를 전부 끈다. 실계좌의 다른 보유 종목을 절대 건드리지 않기
+# 위한 격리 장치(동기화가 켜지면 돌파 전략이 개인 보유분에 손절을 붙여 청산할 수 있음).
+INDEX_ONLY_MODE              = _os.environ.get("INDEX_ONLY_MODE", "false").lower() == "true"
 LEVERAGE_INDEX_LEV_CODE      = _os.environ.get("LEVERAGE_INDEX_LEV_CODE", "122630")   # KODEX 레버리지(롱=신호원)
-LEVERAGE_INDEX_INV_CODE      = _os.environ.get("LEVERAGE_INDEX_INV_CODE", "252670")   # KODEX 200선물인버스2X(숏)
+LEVERAGE_INDEX_INV_CODE      = _os.environ.get("LEVERAGE_INDEX_INV_CODE", "114800")   # KODEX 인버스 1x(숏)
 LEVERAGE_INDEX_AMOUNT        = int(_os.environ.get("LEVERAGE_INDEX_AMOUNT", "2000000"))  # 회당 투자금(삼성과 분리)
 LEVERAGE_INDEX_BB_PERIOD     = int(_os.environ.get("LEVERAGE_INDEX_BB_PERIOD", "29"))    # 볼린저 기간(봉수)
 LEVERAGE_INDEX_BB_MULT       = float(_os.environ.get("LEVERAGE_INDEX_BB_MULT", "1.0"))   # 볼린저 승수(지수는 저변동→0.8보다 넓게)
@@ -370,7 +378,10 @@ TRANSACTION_TAX_RATE = float(_os.environ.get("TRANSACTION_TAX_RATE", "0.0018"))
 # ─────────────────────────────────────────
 # 로그 / DB
 # ─────────────────────────────────────────
-LOG_DIR          = _os.path.join(_BASE_DIR, "logs")
+# BOT_DATA_DIR/BOT_LOG_DIR: 인스턴스별 분리. DB·토큰캐시·포지션/halt 영속파일이 모두
+# DB_PATH의 폴더를 따르므로, 두 인스턴스가 같은 파일을 덮어쓰지 않게 하려면 이걸 나눠야 한다.
+LOG_DIR          = _os.environ.get("BOT_LOG_DIR") or _os.path.join(_BASE_DIR, "logs")
 LOG_LEVEL        = "INFO"
-DB_PATH          = _os.path.join(_BASE_DIR, "data", "trade_history.db")
+DATA_DIR         = _os.environ.get("BOT_DATA_DIR") or _os.path.join(_BASE_DIR, "data")
+DB_PATH          = _os.path.join(DATA_DIR, "trade_history.db")
 BACKTEST_DB_PATH = _os.path.join(_BASE_DIR, "backtest_data", "backtest_results.db")

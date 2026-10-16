@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 from typing import Optional
@@ -27,12 +28,12 @@ class LeverageIndexAgent(BaseAgent):
       - 신호원 = 레버리지 ETF(122630) 자체 3분봉 (= KOSPI200 방향, 백테스트와 동일)
       - 방향: 122630 일봉 단기MA/장기MA 정배열 (INDEX_TREND_FAST_MA/SLOW_MA)
       - 진입: 그 방향으로 3분봉 볼린저밴드(INDEX_BB_PERIOD/MULT) 상/하단 돌파 시
-             롱 → 122630 매수 / 숏 → 252670(인버스2X) 매수
+             롱 → 122630 매수 / 숏 → 114800(KODEX 인버스 1x) 매수
       - 청산: 손절(진입가 -SL_RATE)·단일단계 트레일링(피크수익≥SL_RATE 후 GAP 이탈)·
              EOD 강제청산(FORCE_EXIT). 두 방향 모두 '매수'라 보유 ETF 가격 상승이 favorable
              → SL/트레일 로직은 방향 무관(백테스트 현실모델과 동일).
 
-    주의: 이 에이전트 단독 소유 종목 = {122630, 252670}. 재시작 시 다른 에이전트/일반
+    주의: 이 에이전트 단독 소유 종목 = {122630, 114800}. 재시작 시 다른 에이전트/일반
     돌파 전략이 흡수하지 못하도록 main._sync_existing_positions의 skip_codes에 포함해야 함
     (교차 소유권 불변식).
     """
@@ -57,6 +58,10 @@ class LeverageIndexAgent(BaseAgent):
         self._halted_reason: Optional[str] = None  # None이면 정상, 문자열이면 당일 신규진입 중단
         self._floor_warned_date: Optional[str] = None
         self._state_date: Optional[str] = None       # 가드레일 상태파일의 날짜(같은 날 재시작 판별)
+        # 주문 직렬화 락 — 실계좌는 WS 틱 스레드(SL/트레일)·메인 루프(EOD 타이머·백업 틱)가
+        # 동시에 _exit를 부를 수 있어, '포지션 확인→주문→None' 사이 경합 시 매도가 두 번
+        # 나갈 수 있다(같은 종목 개인 보유분까지 팔릴 위험). 진입·청산을 이 락으로 묶는다.
+        self._order_lock = threading.RLock()
         _data_dir = os.path.dirname(config.DB_PATH)
         self._halt_state_path = os.path.join(_data_dir, "leverage_index_halt.json")
         self._pos_state_path  = os.path.join(_data_dir, "leverage_index_pos.json")
@@ -67,8 +72,8 @@ class LeverageIndexAgent(BaseAgent):
         return getattr(config, "LEVERAGE_INDEX_LEV_CODE", "122630")
 
     @property
-    def INVERSE_CODE(self) -> str:    # 숏 ETF (인버스2X)
-        return getattr(config, "LEVERAGE_INDEX_INV_CODE", "252670")
+    def INVERSE_CODE(self) -> str:    # 숏 ETF (KODEX 인버스 1x)
+        return getattr(config, "LEVERAGE_INDEX_INV_CODE", "114800")
 
     @property
     def SIGNAL_CODE(self) -> str:     # 신호 분봉 종목 = 롱 ETF 자체
@@ -244,7 +249,7 @@ class LeverageIndexAgent(BaseAgent):
         if trend == "UP" and breakout_up:
             return "LEVERAGE"   # 롱 → 122630
         if trend == "DOWN" and breakout_down:
-            return "INVERSE"    # 숏 → 252670
+            return "INVERSE"    # 숏 → 114800
         return None
 
     def _bollinger(self, closes: list, period: int, mult: float):
@@ -259,9 +264,15 @@ class LeverageIndexAgent(BaseAgent):
     # 진입
     # ─────────────────────────────────────────
     def _enter(self, direction: str, context):
+        with self._order_lock:
+            if self._position:   # 락 안에서 재확인 — 중복 진입 방지
+                return
+            self._enter_unlocked(direction, context)
+
+    def _enter_unlocked(self, direction: str, context):
         harness  = context["harness"]
         etf_code = self.LEVERAGE_CODE if direction == "LEVERAGE" else self.INVERSE_CODE
-        etf_name = "KODEX레버리지" if direction == "LEVERAGE" else "KODEX200선물인버스2X"
+        etf_name = "KODEX레버리지" if direction == "LEVERAGE" else "KODEX인버스"
 
         price = self._last_etf_price.get(etf_code, 0)
         if price <= 0:
@@ -315,7 +326,7 @@ class LeverageIndexAgent(BaseAgent):
         )
         notifier = harness.get_context().get("notifier")
         if notifier:
-            label = "지수레버리지(롱)" if direction == "LEVERAGE" else "지수인버스2X(숏)"
+            label = "지수레버리지(롱)" if direction == "LEVERAGE" else "지수인버스(숏)"
             notifier.send(
                 f"🟢 <b>지수 레버리지 전략 진입</b> [{etf_name}({etf_code})]\n"
                 f"방향: {label} | {qty}주 @ {price:,}원\n"
@@ -326,7 +337,11 @@ class LeverageIndexAgent(BaseAgent):
     # 청산
     # ─────────────────────────────────────────
     def _exit(self, reason: str, ref_price: int, context):
-        if not self._position:
+        with self._order_lock:
+            self._exit_unlocked(reason, ref_price, context)
+
+    def _exit_unlocked(self, reason: str, ref_price: int, context):
+        if not self._position:   # 락 안에서 확인 — 동시 호출 시 두 번째는 여기서 종료
             return
         harness  = context["harness"]
         pos      = self._position
