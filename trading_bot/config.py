@@ -42,6 +42,16 @@ REST_POLL_INTERVAL_IDLE = int(_os.environ.get("REST_POLL_INTERVAL_IDLE", "420"))
 API_SOFT_LIMIT     = int(_os.environ.get("API_SOFT_LIMIT", "1500"))      # 이상: 미보유 종목 폴링 중단
 API_CRITICAL_LIMIT = int(_os.environ.get("API_CRITICAL_LIMIT", "1650"))  # 이상: 신호 분봉 갱신도 중단
 
+# VM picks 시장필터 (skills/vm_market_guard.py) — off / shadow(기록만, 기본) / block(실제 보류)
+# 2026-10-22 1달 재생에서 차단 시 오히려 손해 → 기록 모드로 4~8주 근거 수집 후 결정.
+VM_GUARD_MODE        = _os.environ.get("VM_GUARD_MODE", "shadow").lower()
+VM_GUARD_PROXY_CODE  = _os.environ.get("VM_GUARD_PROXY_CODE", "122630")   # 코스피200 2배(모의에서 이미 폴링)
+VM_GUARD_PROXY_LEV   = float(_os.environ.get("VM_GUARD_PROXY_LEV", "2.0"))
+VM_GUARD_GAP         = float(_os.environ.get("VM_GUARD_GAP", "-0.015"))      # 코스피 시가 갭 이하
+VM_GUARD_INTRADAY    = float(_os.environ.get("VM_GUARD_INTRADAY", "-0.02"))  # 코스피 전일비 이하
+VM_GUARD_STOPS_TODAY = int(_os.environ.get("VM_GUARD_STOPS_TODAY", "2"))     # 당일 VM 손절 횟수 이상
+VM_GUARD_STOPS_3D    = int(_os.environ.get("VM_GUARD_STOPS_3D", "3"))        # 직전 3거래일 손절 횟수 이상
+
 # 모의투자 / 실서버 도메인 자동 선택 (키움 REST API)
 API_BASE_URL = (
     "https://mockapi.kiwoom.com"   # 모의투자

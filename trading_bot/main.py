@@ -19,6 +19,7 @@ from skills.scan_skill import StockScanner, MarketFilter
 from skills.market_data_skill import MarketDataSkill
 from skills.execution_skill import ExecutionSkill
 from skills.vm_position_manager import VMPositionManager
+from skills.vm_market_guard import VMMarketGuard
 from hooks.risk_hook import RiskHook
 from hooks.market_filter_hook import MarketFilterHook
 from harness.kiwoom_harness import KiwoomHarness
@@ -150,6 +151,13 @@ class TradingBot:
         self.harness.register_skill("vm", self.vm_manager)   # 하네스 스킬로 등록
         self.harness.update_context("vm_manager",  self.vm_manager)
         self.harness.update_context("vm_buy_queue", [])
+
+        # 7-1. VM picks 시장필터(갭하락·장중급락·손절묶음) — 기본 기록 모드(VM_GUARD_MODE)
+        self.vm_guard = VMMarketGuard(
+            self.kiwoom, self.notifier,
+            price_fn=lambda c: self.harness.get_context().get("last_prices", {}).get(c),
+        )
+        self.agent.vm_guard = self.vm_guard
 
         # 8. 텔레그램 원격 명령 등록
         self._register_telegram_commands()
@@ -2642,6 +2650,15 @@ class TradingBot:
                 logger.info(
                     f"[Bot] VM 대기열 제거 ({tranche}차 이미 완료): {item['name']}({code})"
                 )
+                continue
+            # 손절가 이하에서 사면 즉시 손절 → 대기열에서 제거
+            if item.get("stop_loss") and current_price <= item["stop_loss"]:
+                logger.info(f"[Bot] VM 대기열 제거 (현재가 {current_price:,} ≤ 손절가 "
+                            f"{item['stop_loss']:,}): {item['name']}({code})")
+                continue
+            blocked, _ = self.vm_guard.check(code, item["name"], "대기열 매수")
+            if blocked:
+                remaining.append(item)
                 continue
             ok = self.vm_manager.buy_vm(
                 code=code,

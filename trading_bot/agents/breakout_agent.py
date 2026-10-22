@@ -427,6 +427,24 @@ class BreakoutTradingAgent(BaseAgent):
         # 2. 지정가 주문 fill 추론 (pending 주문)
         for pending in vm_manager.get_pending_for_code(code):
             if price <= pending.price:
+                # 손절가 이하에서 체결하면 즉시 손절로 이어진다(10-15 갭다운: 557,000 매수 →
+                # 3분 뒤 손절). 체결 대신 주문 취소.
+                if pending.stop_loss and price <= pending.stop_loss:
+                    if vm_manager.cancel_pending_order(pending.ord_no):
+                        logger.info(f"[Agent] VM {pending.name}({code}) {pending.tranche}차: 현재가 {price:,} ≤ "
+                                    f"손절가 {pending.stop_loss:,} → 체결 대신 주문 취소")
+                        if notifier:
+                            notifier.send(
+                                f"⛔ <b>VM 매수 취소</b> [{pending.name}({code})] {pending.tranche}차\n"
+                                f"현재가 {price:,}원이 손절가 {pending.stop_loss:,.0f}원 이하 — 사자마자 손절되는 체결 방지"
+                            )
+                    continue
+                guard = getattr(self, "vm_guard", None)
+                if guard:
+                    blocked, _ = guard.check(code, pending.name, f"{pending.tranche}차 체결")
+                    if blocked:
+                        vm_manager.cancel_pending_order(pending.ord_no)
+                        continue
                 filled = vm_manager.on_fill_detected(pending.ord_no, price)
                 if filled:
                     if notifier:
@@ -489,6 +507,11 @@ class BreakoutTradingAgent(BaseAgent):
         created_at = conf.get("created_at", "")
         if vm_manager.has_pending(code, created_at) or vm_manager.has_any(code):
             return
+        guard = getattr(self, "vm_guard", None)
+        if guard:
+            blocked, _ = guard.check(code, conf.get("name", code), "발주")
+            if blocked:
+                return
         buy_range  = buy_max - buy_min
         threshold2 = self._floor_tick(int(buy_min + buy_range * 2 / 3))
         threshold1 = self._floor_tick(int(buy_min + buy_range / 3))

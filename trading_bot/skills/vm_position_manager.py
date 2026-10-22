@@ -367,6 +367,22 @@ class VMPositionManager(BaseSkill):
             del self._pending[ord_no]
         self.save_pending()
 
+    def cancel_pending_order(self, ord_no: str) -> bool:
+        """미체결 지정가 매수 1건 취소(손절가 아래 체결 방지·시장필터 차단용)."""
+        p = self._pending.get(ord_no)
+        if not p or p.filled:
+            return False
+        if ord_no.startswith("SIM_"):
+            logger.info(f"[VMManager] [Mock] 가상 매수 취소: {p.name}({p.code}) {p.tranche}차")
+        elif self.kiwoom.cancel_order(ord_no, p.code, p.qty) != 0:
+            logger.warning(f"[VMManager] 매수 취소 실패: {p.name}({p.code}) {p.tranche}차 ord={ord_no}")
+            return False
+        else:
+            logger.info(f"[VMManager] 미체결 매수 취소: {p.name}({p.code}) {p.tranche}차")
+        del self._pending[ord_no]
+        self.save_pending()
+        return True
+
     # ── pending 조회 ────────────────────────────────────────────────────────────
 
     def get_pending_for_code(self, code: str) -> List[VMPendingOrder]:
