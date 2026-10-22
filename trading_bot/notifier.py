@@ -42,6 +42,10 @@ class TelegramNotifier:
         if not self._enabled:
             return
         try:
+            import config as _cfg
+            prefix = getattr(_cfg, "TELEGRAM_PREFIX", "")
+            if prefix:
+                text = f"{prefix} {text}"
             url = _SEND_URL.format(token=self.token)
             resp = requests.post(
                 url,
@@ -59,6 +63,11 @@ class TelegramNotifier:
     def start_polling(self):
         if not self._enabled:
             logger.info("[Telegram] 토큰/채팅ID 미설정 — 폴링 생략")
+            return
+        import config as _cfg
+        if not getattr(_cfg, "TELEGRAM_POLLING", True):
+            # 같은 봇 토큰을 쓰는 두 번째 인스턴스 — 명령 수신 없이 알림 전송만
+            logger.info("[Telegram] TELEGRAM_POLLING=false — 명령 수신 생략(알림 전송만)")
             return
 
         # 웹훅이 걸려있으면 getUpdates가 동작하지 않으므로 먼저 제거

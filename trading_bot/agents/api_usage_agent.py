@@ -61,6 +61,8 @@ class ApiUsageAgent(BaseAgent):
             self._last_hour_logged = hour
             self._prev_by_api = dict(by_api)
 
+        if not usage.get("limit"):
+            return   # 일일 한도가 없는 증권사(나무) — 시간대별 로그만 남김
         for threshold in _THRESHOLDS:
             if count >= threshold and threshold not in self._notified_today:
                 self._notified_today.add(threshold)

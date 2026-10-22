@@ -186,8 +186,8 @@ class BreakoutTradingAgent(BaseAgent):
                 on_candle_close=lambda c, _code=code: harness.broadcast_event("CANDLE", c)
             )
             
-            # 실시간 틱 구독 (모의투자 제외)
-            if not config.IS_SIMULATION:
+            # 실시간 틱 구독 (실시간 불가 환경=키움 모의 제외)
+            if config.REALTIME_TICKS:
                 harness.kiwoom.subscribe_realtime(code)
 
             str_type = getattr(config, "ENTRY_STRATEGY_TYPE", 1)

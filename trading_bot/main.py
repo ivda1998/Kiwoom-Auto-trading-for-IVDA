@@ -90,7 +90,12 @@ class TradingBot:
         )
 
         # 1. 핵심 컴포넌트 초기화
-        self.kiwoom = KiwoomAPI()
+        # 증권사 래퍼 — 속성명은 기존 코드 호환을 위해 kiwoom 그대로 (BROKER=nh면 나무 NHPLUG)
+        if config.BROKER == "nh":
+            from nh_api import NHAPI
+            self.kiwoom = NHAPI()
+        else:
+            self.kiwoom = KiwoomAPI()
         self.risk = RiskManager(self.kiwoom)
         self.scanner = StockScanner(self.kiwoom)
         self.market_filter = MarketFilter(self.kiwoom)
@@ -239,7 +244,7 @@ class TradingBot:
                     _code,
                     on_candle_close=lambda _c, __code=_code: self.harness.broadcast_event("CANDLE", _c)
                 )
-                if not config.IS_SIMULATION:
+                if config.REALTIME_TICKS:
                     self.kiwoom.subscribe_realtime(_code)
                 logger.info(f"[Bot] VM 포지션 복구: {_name}({_code}) {vm_pos.qty}주")
 
@@ -534,7 +539,7 @@ class TradingBot:
                 code,
                 on_candle_close=lambda candle, _code=code: self.harness.broadcast_event("CANDLE", candle)
             )
-            if not config.IS_SIMULATION:
+            if config.REALTIME_TICKS:
                 self.kiwoom.subscribe_realtime(code)
                 
             logger.info(f"[Bot] 기존 보유 종목 복구: {name}({code}) {p['qty']}주, 진입가 {p['entry_price']:,.0f}")
@@ -578,7 +583,7 @@ class TradingBot:
                             code,
                             on_candle_close=lambda candle, _code=code: self.harness.broadcast_event("CANDLE", candle)
                         )
-                        if not config.IS_SIMULATION:
+                        if config.REALTIME_TICKS:
                             self.kiwoom.subscribe_realtime(code)
                         # 지정가 분할매수 발주 (VM picks 전용)
                         if config.VM_MODE and getattr(config, "VM_PICKS_ENABLED", True):
@@ -900,7 +905,7 @@ class TradingBot:
                             code,
                             on_candle_close=lambda candle, _c=code: self.harness.broadcast_event("CANDLE", candle)
                         )
-                        if not config.IS_SIMULATION:
+                        if config.REALTIME_TICKS:
                             self.kiwoom.subscribe_realtime(code)
                         # 지정가 분할매수 발주 (VM picks 전용)
                         _vm_conf = config.get_custom_targets().get(code)
@@ -976,8 +981,8 @@ class TradingBot:
                     if not config.IS_SIMULATION:
                         self._check_pending_fills()
 
-                # 모의투자 전용 REST 틱 폴링
-                if config.IS_SIMULATION and self._in_trade_hours() and self._candidates:
+                # 실시간 틱이 없는 환경(키움 모의) 전용 REST 틱 폴링
+                if not config.REALTIME_TICKS and self._in_trade_hours() and self._candidates:
                     custom_targets_map = config.get_custom_targets()
                     # VM 포지션 보유 종목 집합 (어제 산 종목 포함)
                     vm_pos_codes = {p.code for p in self.vm_manager.get_all().values()}
@@ -2392,6 +2397,9 @@ class TradingBot:
         def cmd_apiusage(_args):
             """키움 REST 일일 호출량(1,700회 한도) 조회"""
             usage = self.kiwoom.get_api_usage()
+            if not usage.get("limit"):
+                return (f"📡 <b>API 호출량 ({usage['date']})</b>\n"
+                        f"{usage['count']}회 (일일 한도 없음)")
             return (
                 f"📡 <b>API 호출량 ({usage['date']})</b>\n"
                 f"{usage['count']} / {usage['limit']}회 사용 ({usage['pct']}%)\n"
@@ -2905,7 +2913,10 @@ class TradingBot:
         2=위급(신호 분봉 갱신도 중단 — 신규진입 없음, 보유 포지션 손절 감시만 유지).
         한도(1700) 도달 시 kiwoom_api가 모든 조회를 끊어 손절 감시까지 멈추므로
         (2026-10-21 14:05~15:20 실제 발생) 그 전에 단계적으로 덜 중요한 호출부터 끊는다."""
-        count = self.kiwoom.get_api_usage()["count"]
+        usage = self.kiwoom.get_api_usage()
+        if not usage.get("limit"):
+            return 0   # 일일 한도가 없는 증권사(나무)
+        count = usage["count"]
         tier = 2 if count >= config.API_CRITICAL_LIMIT else (1 if count >= config.API_SOFT_LIMIT else 0)
         today = datetime.now().date()
         if getattr(self, "_api_tier_date", None) != today:

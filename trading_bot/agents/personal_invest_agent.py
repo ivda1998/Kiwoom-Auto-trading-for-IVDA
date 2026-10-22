@@ -10,7 +10,8 @@ from logger import TradeLogger
 
 logger = logging.getLogger(__name__)
 
-_STATE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "personal_invest_state.json")
+# 인스턴스 데이터 폴더 기준(기본값은 기존과 같은 <코드>/data) — 두 번째 인스턴스가 같은 파일을 덮어쓰지 않게
+_STATE_PATH = os.path.join(config.DATA_DIR, "personal_invest_state.json")
 
 
 class PersonalInvestAgent(BaseAgent):

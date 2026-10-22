@@ -1,0 +1,21 @@
+[Unit]
+Description=Trading Bot - NH Namuh (mock, parallel to Kiwoom)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+# 작업 폴더를 인스턴스 폴더로 분리 — force_sell.txt / change_condition.txt(상대경로)를
+# 키움 봇과 공유하지 않기 위함. 코드는 키움 봇과 같은 trading_bot 폴더를 쓴다.
+WorkingDirectory=/home/ubuntu/autoTrade/nh_instance
+Environment=VM_MODE=true
+Environment=BOT_ENV_FILE=/home/ubuntu/autoTrade/nh_instance/.env.nh
+ExecStart=/home/ubuntu/venv/bin/python /home/ubuntu/autoTrade/trading_bot/main.py --auto
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:/home/ubuntu/autoTrade/nh_instance/logs/service.log
+StandardError=append:/home/ubuntu/autoTrade/nh_instance/logs/service.log
+
+[Install]
+WantedBy=multi-user.target

@@ -32,6 +32,27 @@ APP_SECRET = _os.environ.get("KIWOOM_APP_SECRET", "YOUR_APP_SECRET")
 ACCOUNT_NUMBER   = _os.environ.get("KIWOOM_ACCOUNT", "81202949")
 ACCOUNT_PASSWORD = _os.environ.get("KIWOOM_ACCOUNT_PASSWORD", "")
 IS_SIMULATION = _os.environ.get("IS_SIMULATION", "true").lower() == "true"
+
+# ─────────────────────────────────────────
+# 증권사 선택 — kiwoom(기본) / nh(나무증권 NHPLUG, nh_api.py)
+# ─────────────────────────────────────────
+BROKER = _os.environ.get("BROKER", "kiwoom").strip().lower()
+NH_APP_KEY     = _os.environ.get("NH_APP_KEY", "")
+NH_APP_SECRET  = _os.environ.get("NH_APP_SECRET", "")
+NH_ACCOUNT     = _os.environ.get("NH_ACCOUNT", "")        # 모의=acct_type 03 계좌, 실전=01
+NH_RATE_LIMIT  = int(_os.environ.get("NH_RATE_LIMIT", "4"))         # REST 초당 호출(상한 5)
+NH_ORDER_MARKET = _os.environ.get("NH_ORDER_MARKET", "KRX")         # KRX / NXT / SOR
+NH_FILL_NOTICE = _os.environ.get("NH_FILL_NOTICE", "true").lower() == "true"  # 체결통보 WS(d2)
+NH_WS_PING     = int(_os.environ.get("NH_WS_PING", "30"))           # 0이면 ping 끔
+NH_BALANCE_CAP = int(_os.environ.get("NH_BALANCE_CAP", "0"))        # >0이면 잔고 상한(모의 50억 보정)
+# 실시간 틱 수신 가능 여부 — 키움 모의는 실시간 등록 불가(REST 폴링), 나무는 모의에서도
+# 운영서버 시세 WS를 쓰므로 가능. False면 main이 REST 시세 폴링으로 틱을 만든다.
+REALTIME_TICKS = (not IS_SIMULATION) or BROKER == "nh"
+
+# 텔레그램 명령 수신(롱폴링) — 같은 봇 토큰을 두 인스턴스가 폴링하면 충돌하므로
+# 두 번째 인스턴스는 false(알림 전송만)로 둔다. PREFIX는 알림 앞머리 표시용.
+TELEGRAM_POLLING = _os.environ.get("TELEGRAM_POLLING", "true").lower() == "true"
+TELEGRAM_PREFIX  = _os.environ.get("TELEGRAM_PREFIX", "")
 EXCLUDE_SPAC_ETN_ETF = _os.environ.get("EXCLUDE_SPAC_ETN_ETF", "false").lower() == "true"
 
 # REST 시세폴링 주기(초) — 일일 API 한도(1700) 보호용 차등화.
