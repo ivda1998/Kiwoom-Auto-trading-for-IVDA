@@ -71,6 +71,7 @@ class KiwoomAPI:
         # ── API 요청 횟수 추적 (일일 1700회 한도) ──────
         self._rest_call_count: int = 0
         self._rest_call_date: Optional[object] = None   # datetime.date
+        self._api_counts: dict = {}                     # api_id → 오늘 호출수 (주문 제외)
 
         # ── REST 호출 간격 스로틀 (초당 최대 ~4.5회) ────
         self._last_rest_call: float = 0.0
@@ -211,9 +212,11 @@ class KiwoomAPI:
         if self._rest_call_date != today:
             self._rest_call_date  = today
             self._rest_call_count = 0
+            self._api_counts      = {}
 
         if not _is_order_api:
             self._rest_call_count += 1
+            self._api_counts[api_id] = self._api_counts.get(api_id, 0) + 1
         cnt = self._rest_call_count
 
         if not _is_order_api:
@@ -287,13 +290,15 @@ class KiwoomAPI:
         반환: {"count", "limit", "remaining", "pct", "date"}
         """
         today = datetime.now().date()
-        count = self._rest_call_count if self._rest_call_date == today else 0
+        is_today = self._rest_call_date == today
+        count = self._rest_call_count if is_today else 0
         return {
             "count":     count,
             "limit":     self._DAILY_LIMIT,
             "remaining": max(0, self._DAILY_LIMIT - count),
             "pct":       round(count / self._DAILY_LIMIT * 100, 1),
             "date":      str(today),
+            "by_api":    dict(self._api_counts) if is_today else {},
         }
 
     # ─────────────────────────────────────────

@@ -1022,6 +1022,11 @@ class TradingBot:
                     poll_active = getattr(config, "REST_POLL_INTERVAL", 180)
                     poll_idle   = getattr(config, "REST_POLL_INTERVAL_IDLE", 420)
 
+                    # API 절약 모드(≥1500회): 실제 보유 종목만 폴링 — 손절 감시 예산 확보
+                    if self._api_tier() >= 1:
+                        _really_held = self._really_held_codes()
+                        target_codes = [c for c in target_codes if c in _really_held]
+
                     for code in target_codes:
                         if code == "005930":
                             continue  # 삼성전자는 하단 ka10080 갱신 블록에서 처리
@@ -1059,7 +1064,8 @@ class TradingBot:
 
                 # ── 삼성전자 신호 분봉: ka10080 갱신 (실전/시뮬 공용, 레버리지 전략 독립 블록) ──
                 # 봉은 API 공식 분봉만 사용 (api_feed=True 빌더). 새 봉이 기대되는 시점에만 폴링.
-                if self._in_trade_hours() and hasattr(self, "leverage_agent") and not self._index_only:
+                if (self._in_trade_hours() and hasattr(self, "leverage_agent") and not self._index_only
+                        and self._api_tier() < 2):
                     last_refresh = self._last_sim_poll.get("005930", 0.0)
                     if now_ts - last_refresh >= 30:  # 최소 30초 간격
                         market_data = self.harness.skills.get("market_data")
@@ -1087,7 +1093,8 @@ class TradingBot:
                 # ── 지수 레버리지 신호 분봉(122630): ka10080 갱신 ──
                 # 122630은 틱 폴링(SL/TP)과 별개로 신호 분봉도 필요하므로 전용 스로틀 키 사용.
                 if (self._in_trade_hours() and hasattr(self, "leverage_index_agent")
-                        and getattr(config, "LEVERAGE_INDEX_ENABLED", False)):
+                        and getattr(config, "LEVERAGE_INDEX_ENABLED", False)
+                        and self._api_tier() < 2):
                     sig_code = self.leverage_index_agent.SIGNAL_CODE
                     key = f"{sig_code}_candle"
                     last_refresh = self._last_sim_poll.get(key, 0.0)
@@ -1805,7 +1812,11 @@ class TradingBot:
                 cmd2 = parts[1].lower()
                 if cmd2 == "on":
                     config.BREAKOUT_ENABLED = True
-                    return "✅ 일반전략(돌파) ON"
+                    # OFF 동안엔 스캐너가 후보를 안 모았으므로 장중에 켜면 즉시 1회 스캔
+                    if self._in_trade_hours():
+                        self._run_initial_scan()
+                        return "✅ 일반전략(돌파) ON — 후보 스캔 시작(백그라운드, 약 20분)"
+                    return "✅ 일반전략(돌파) ON — 다음 개장 스캔부터 후보 수집"
                 if cmd2 == "off":
                     config.BREAKOUT_ENABLED = False
                     return "✅ 일반전략(돌파) OFF (기존 포지션 청산 로직은 유지)"
@@ -2871,6 +2882,38 @@ class TradingBot:
     def _in_trade_hours(self) -> bool:
         """config.is_trade_hours() 래퍼 — 단일 진실 공급원 유지."""
         return config.is_trade_hours()
+
+    def _api_tier(self) -> int:
+        """일일 API 사용량 단계. 0=정상, 1=절약(미보유 종목 시세폴링 중단),
+        2=위급(신호 분봉 갱신도 중단 — 신규진입 없음, 보유 포지션 손절 감시만 유지).
+        한도(1700) 도달 시 kiwoom_api가 모든 조회를 끊어 손절 감시까지 멈추므로
+        (2026-10-21 14:05~15:20 실제 발생) 그 전에 단계적으로 덜 중요한 호출부터 끊는다."""
+        count = self.kiwoom.get_api_usage()["count"]
+        tier = 2 if count >= config.API_CRITICAL_LIMIT else (1 if count >= config.API_SOFT_LIMIT else 0)
+        today = datetime.now().date()
+        if getattr(self, "_api_tier_date", None) != today:
+            self._api_tier_date, self._api_tier_seen = today, 0
+        if tier > self._api_tier_seen:
+            self._api_tier_seen = tier
+            msg = ("미보유 종목 시세폴링 중단(보유 포지션·신호 분봉만 유지)" if tier == 1
+                   else "신호 분봉 갱신도 중단 — 신규 진입 정지, 보유 포지션 손절 감시만 유지")
+            logger.warning(f"[Bot] API 사용량 {count}회 → {msg}")
+            self.notifier.send(f"🛑 <b>API 절약 모드 {tier}단계</b> ({count}/1700회)\n{msg}")
+        return tier
+
+    def _really_held_codes(self) -> set:
+        """실제로 포지션을 들고 있는 종목만(대기 후보·미보유 레버리지 ETF 제외)."""
+        held = {c for c, _ in self.execution_skill.get_all_positions().items()}
+        held |= {p.code for p in self.vm_manager.get_all().values()}
+        # 미체결 VM 지정가 주문 종목도 포함 — 모의투자는 폴링 틱으로 체결을 감지하므로
+        # 빼면 체결된 포지션을 봇이 모르는 상태가 된다.
+        held |= {p.code for p in getattr(self.vm_manager, "_pending", {}).values()}
+        held |= set(self.personal_invest_agent.get_all_positions().keys())
+        for ag in (getattr(self, "leverage_agent", None), getattr(self, "leverage_index_agent", None)):
+            pos = getattr(ag, "_position", None) if ag else None
+            if pos and pos.get("code"):
+                held.add(pos["code"])
+        return held
 
     def _can_buy_time(self) -> bool:
         """config.is_buy_time() 래퍼 — 단일 진실 공급원 유지."""

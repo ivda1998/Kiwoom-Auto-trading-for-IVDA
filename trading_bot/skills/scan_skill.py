@@ -46,7 +46,16 @@ class StockScanner:
             executor_positions = self._get_executor_positions_hook()
             
         custom_targets = self._get_custom_targets(existing_positions=executor_positions)
-        
+
+        # 돌파전략 OFF면 조건식·전체시장(ka10099) 스캔 결과를 쓸 곳이 없다 — 수동 지정
+        # (VM picks)만 등록. 전체시장 폴백은 664종목 일봉조회로 하루 API 한도의 ~40%를
+        # 쓰면서도 OFF 상태에선 매수에 쓰이지 않았다(2026-10-22 한도초과 원인).
+        if not getattr(config, "BREAKOUT_ENABLED", True):
+            self._candidates = custom_targets[:config.MAX_CANDIDATES]
+            logger.info(f"[Scanner] 돌파전략 OFF → 조건식·전체시장 스캔 생략, "
+                        f"수동 지정 {len(self._candidates)}개만 등록")
+            return self._candidates
+
         use_condition = bool(
             getattr(config, "CONDITION_NAME", "").strip()
             or getattr(config, "CONDITION_SEQ",  "").strip()
