@@ -8,11 +8,43 @@ from typing import Dict, List, Optional
 import json
 import logging
 import os
+import time
 
 import config
 from skills.base_skill import BaseSkill
 
 logger = logging.getLogger(__name__)
+
+# 주문 실패 후 재시도 간격(초). 틱마다 재주문하면 영구 거부 오류에서 초당 1회씩 폭주한다
+# (2026-10-23 나무 IGW40011: 대덕전자 540회).
+BUY_RETRY_DELAYS = (10, 30, 60, 120, 300)
+BUY_MAX_FAILS = 8            # 이만큼 연속 실패하면 그 매수 건은 포기 (약 19분)
+SELL_RETRY_DELAYS = (5, 15, 30, 60)   # 매도는 포기하지 않고 최대 60초 간격으로 계속 시도
+
+
+class _Backoff:
+    """키별 연속 실패 횟수와 다음 시도 가능 시각."""
+
+    def __init__(self, delays):
+        self._delays = delays
+        self._state: Dict[str, tuple] = {}   # key → (fails, next_at)
+
+    def ready(self, key: str) -> bool:
+        st = self._state.get(key)
+        return st is None or time.monotonic() >= st[1]
+
+    def fail(self, key: str) -> int:
+        fails = self._state.get(key, (0, 0))[0] + 1
+        delay = self._delays[min(fails, len(self._delays)) - 1]
+        self._state[key] = (fails, time.monotonic() + delay)
+        return fails
+
+    def wait_left(self, key: str) -> int:
+        st = self._state.get(key)
+        return max(0, int(st[1] - time.monotonic())) if st else 0
+
+    def clear(self, key: str):
+        self._state.pop(key, None)
 
 
 @dataclass
@@ -91,6 +123,8 @@ class VMPositionManager(BaseSkill):
             os.path.dirname(persist_path), "vm_pending_orders.json"
         )
         self._screen_counter = 2000
+        self._buy_backoff = _Backoff(BUY_RETRY_DELAYS)    # 키: pending ord_no
+        self._sell_backoff = _Backoff(SELL_RETRY_DELAYS)  # 키: position_id
 
     # ── BaseSkill 인터페이스 ────────────────────────────────────────────────────
 
@@ -286,6 +320,8 @@ class VMPositionManager(BaseSkill):
 
         # 모의투자: 가상 pending이므로 실제 매수를 시장가로 발주
         if config.IS_SIMULATION:
+            if not self._buy_backoff.ready(ord_no):
+                return False
             ret, _ = self.kiwoom.send_order(
                 order_name=f"VM분할매수{pending.tranche}_{pending.code}",
                 screen_no=str(self._next_screen()),
@@ -296,11 +332,9 @@ class VMPositionManager(BaseSkill):
                 hoga_type="03",
             )
             if ret != 0:
-                logger.error(
-                    f"[VMManager] [Mock] 시장가 매수 실패: {pending.name}({pending.code}) "
-                    f"{pending.tranche}차"
-                )
+                self._on_buy_fail(pending)
                 return False
+            self._buy_backoff.clear(ord_no)
 
         pending.filled = True
         pending.fill_price = fill_price
@@ -336,6 +370,25 @@ class VMPositionManager(BaseSkill):
             f"{pending.qty}주 @ {fill_price:,}원 tp_ord={tp_ord_no}"
         )
         return True
+
+    def buy_retry_ready(self, ord_no: str) -> bool:
+        """직전 매수 실패 후 대기 중이면 False — 호출자는 시장필터 기록 등도 건너뛴다."""
+        return self._buy_backoff.ready(ord_no)
+
+    def _on_buy_fail(self, pending: "VMPendingOrder"):
+        fails = self._buy_backoff.fail(pending.ord_no)
+        tag = f"{pending.name}({pending.code}) {pending.tranche}차"
+        if fails >= BUY_MAX_FAILS:
+            logger.error(f"[VMManager] [Mock] 시장가 매수 {fails}회 연속 실패 → 이 매수 건 포기: {tag}")
+            self._pending.pop(pending.ord_no, None)
+            self._buy_backoff.clear(pending.ord_no)
+            self.save_pending()
+        elif fails == 1:
+            logger.error(f"[VMManager] [Mock] 시장가 매수 실패: {tag} — "
+                         f"{self._buy_backoff.wait_left(pending.ord_no)}초 뒤 재시도")
+        else:   # 반복 실패는 경고로만(오류 알림 폭주 방지)
+            logger.warning(f"[VMManager] [Mock] 시장가 매수 실패 {fails}회: {tag} — "
+                           f"{self._buy_backoff.wait_left(pending.ord_no)}초 뒤 재시도")
 
     def infer_tp_filled(self, position_id: str, fill_price: float):
         """TP 지정가 매도 체결 추론 — 주문 재발행 없이 포지션 제거."""
@@ -471,11 +524,14 @@ class VMPositionManager(BaseSkill):
     # ── 매도 ────────────────────────────────────────────────────────────────────
 
     def sell_vm(
-        self, position_id: str, current_price: float, reason: str = ""
+        self, position_id: str, current_price: float, reason: str = "", force: bool = False
     ) -> bool:
-        """단일 포지션 청산. 성공 시 True, 포지션 없으면 False."""
+        """단일 포지션 청산. 성공 시 True, 포지션 없으면 False.
+        직전 매도 실패 후 대기 중이면 주문하지 않고 False (force=True면 대기 무시 — 장마감 청산용)."""
         pos = self._positions.get(position_id)
         if not pos:
+            return False
+        if not force and not self._sell_backoff.ready(position_id):
             return False
 
         screen_no = str(self._next_screen())
@@ -492,14 +548,20 @@ class VMPositionManager(BaseSkill):
             pnl = pos.pnl(current_price)
             self.risk.on_sell(pnl)
             del self._positions[position_id]
+            self._sell_backoff.clear(position_id)
             self.save()
             logger.info(
                 f"[VMManager] 매도 완료: {pos.name}({pos.code}) "
                 f"{pos.qty}주 @ {current_price:,}원 손익:{pnl:+,.0f} 사유:{reason}"
             )
             return True
-        logger.error(f"[VMManager] 매도 실패: {pos.name}({pos.code}) ret={ret}")
+        fails = self._sell_backoff.fail(position_id)
+        (logger.error if fails == 1 else logger.warning)(
+            f"[VMManager] 매도 실패{'' if fails == 1 else f' {fails}회'}: {pos.name}({pos.code}) ret={ret} "
+            f"— {self._sell_backoff.wait_left(position_id)}초 뒤 재시도")
         self._reconcile_single(position_id, pos)
+        if position_id not in self._positions:
+            self._sell_backoff.clear(position_id)
         return False
 
     def _reconcile_single(self, position_id: str, pos: "VMPosition"):

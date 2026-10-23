@@ -523,13 +523,15 @@ class NHAPI:
         """order_type 1=매수 2=매도, hoga_type "00"=지정가 "03"=시장가. 반환 (0, 주문번호) / (-1, "")."""
         path = "/krstock/order/v1/cashBuy" if order_type == 1 else "/krstock/order/v1/cashSell"
         market = hoga_type == "03"
+        # 수량·가격은 숫자 타입(문자열이면 IGW40011). 시장가는 가격 필드를 빼고, 금액·정지가격도 넣지 않음 (SDK 예제와 동일)
         inp = {
-            "act_no": self._account, "iem_cd": code, "orr_qty": str(int(qty)),
-            "orr_pr": "0" if market else str(int(price)), "orr_amt": "",
+            "act_no": self._account, "iem_cd": code, "orr_qty": int(qty),
             "nmn_pr_tp_cd": "05" if market else "01", "orr_cnd_dit_cd": "00",
-            "ssl_nmn_pr_dit_cd": "00", "sop_cnd_pr": "",
+            "ssl_nmn_pr_dit_cd": "00",
             "rmt_mkt_cd": getattr(config, "NH_ORDER_MARKET", "KRX"), "sor_mkt_sli_yn": "N",
         }
+        if not market:
+            inp["orr_pr"] = int(price)
         try:
             # 주문: 401·429(서버 미처리)만 재시도 — 타임아웃 등은 재전송 안 함(중복 주문 방지)
             data, _, _ = self._post(self._trade_base, path, inp)
@@ -548,7 +550,7 @@ class NHAPI:
         try:
             data, _, _ = self._post(self._trade_base, "/krstock/order/v1/cancel", {
                 "act_no": self._account, "org_mkt_orr_no": str(org_ord_no),
-                "all_pat_dit_cd": "1", "iem_cd": code, "cor_qty": "",
+                "all_pat_dit_cd": "1", "iem_cd": code,   # 전량 취소 — 수량(cor_qty, 숫자)은 일부 취소 때만
             })
             o = (_rows(data, "Output_0") or [{}])[0]
             if str(o.get("mkt_orr_no") or "").strip():

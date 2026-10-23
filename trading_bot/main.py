@@ -690,7 +690,7 @@ class TradingBot:
                     except Exception:
                         pass
             cur_price = last_prices.get(vm_pos.code, vm_pos.entry_price)
-            ok = self.vm_manager.sell_vm(pid, cur_price, reason)
+            ok = self.vm_manager.sell_vm(pid, cur_price, reason, force=True)  # 일괄 청산은 재시도 대기 무시
             if ok:
                 self.trade_logger.log_trade(
                     code=vm_pos.code, name=vm_pos.name, side="SELL",
@@ -1260,7 +1260,7 @@ class TradingBot:
                     except Exception as _e:
                         logger.debug(f"[Bot] VM 포지션 날짜 파싱 오류: {_e}")
                 cur_price = last_prices.get(vm_pos.code, vm_pos.entry_price)
-                ok = self.vm_manager.sell_vm(pid, cur_price, "장마감")
+                ok = self.vm_manager.sell_vm(pid, cur_price, "장마감", force=True)
                 if ok:
                     self.trade_logger.log_trade(
                         code=vm_pos.code, name=vm_pos.name, side="SELL",

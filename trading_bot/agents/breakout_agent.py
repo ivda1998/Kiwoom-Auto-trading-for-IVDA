@@ -439,6 +439,8 @@ class BreakoutTradingAgent(BaseAgent):
                                 f"현재가 {price:,}원이 손절가 {pending.stop_loss:,.0f}원 이하 — 사자마자 손절되는 체결 방지"
                             )
                     continue
+                if not vm_manager.buy_retry_ready(pending.ord_no):
+                    continue   # 직전 매수 실패 후 대기 중 — 재주문·필터 기록 모두 건너뜀
                 guard = getattr(self, "vm_guard", None)
                 if guard:
                     blocked, _ = guard.check(code, pending.name, f"{pending.tranche}차 체결")
