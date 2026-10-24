@@ -129,17 +129,23 @@ def cmd_collect():
 
 
 def cmd_eval():
+    """eval [결과파일 이름표 주판정창] — 예: eval data/agent_lab/gemini_results.jsonl LLM_gemini full
+    (Gemini 3 계열은 학습시점 2025-01 이전이라 벤치 전 구간이 누설 없음 → full 주판정, 2026-10-25 결과 보기 전 등록)"""
+    path = sys.argv[2] if len(sys.argv) > 2 else RESULTS
+    label = sys.argv[3] if len(sys.argv) > 3 else "LLM_sonnet"
+    main_w = sys.argv[4] if len(sys.argv) > 4 else "clean"
     snaps = [json.loads(x) for x in open(SNAP, encoding="utf-8")]
-    res = [json.loads(x) for x in open(RESULTS, encoding="utf-8")]
-    main = {r["id"]: r for r in res if r["tag"] == "main"}
+    res = [json.loads(x) for x in open(path, encoding="utf-8")]
+    model = next((r["model"] for r in res if r.get("model")), MODEL)
+    main = {r["id"]: r for r in res if r["tag"] == "main" and r.get("size") is not None}
     _, trades, _ = al.load("index")
     assert len(trades) == len(snaps), "스냅샷 이후 벤치가 바뀜 — build부터 다시"
     # 거부·파싱실패는 1.0(개입 안 함)으로
     weights = [(main.get(s["id"], {}).get("size") if main.get(s["id"], {}).get("size") is not None else 1.0) for s in snaps]
     bad = sum(1 for s in snaps if main.get(s["id"], {}).get("size") is None)
     out = {w: al.evaluate(trades, weights, w) for w in al.WINDOWS}
-    rows = {"LLM_sonnet": {"desc": f"{MODEL} 사이즈 판단 (결측·거부 {bad}건=1.0)", "main": "clean",
-                           "verdict": al.verdict(out, "clean"), "res": out}}
+    rows = {label: {"desc": f"{model} 사이즈 판단 (결측·거부 {bad}건=1.0)", "main": main_w,
+                    "verdict": al.verdict(out, main_w), "res": out}}
     dist = {}
     for w_ in weights:
         dist[w_] = dist.get(w_, 0) + 1
