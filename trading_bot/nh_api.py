@@ -480,7 +480,9 @@ class NHAPI:
             data = self._balance_raw()
             out = []
             for p in _rows(data, "Output_1"):
-                qty = _i(p.get("itg_bnc_qty"))
+                # itg_bnc_qty는 결제된 수량이라 매수 후 D+2 전엔 0으로 온다(10-24 실측: 금요일 매수분
+                # itg 0 / rsdl 510). 현재 보유는 rsdl_qty(당일 매도 반영) — 없을 때만 itg로 대체.
+                qty = _i(p.get("rsdl_qty")) if "rsdl_qty" in p else _i(p.get("itg_bnc_qty"))
                 if qty <= 0:
                     continue
                 code = str(p.get("iem_cd", "")).strip()
