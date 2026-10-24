@@ -761,7 +761,8 @@ def simulate_index(long_bars, short_lookup, trend_lookup, signal_fn,
                     tk = long_tick if pos['dir'] == 'L' else short_tick
                     slip = slip_ticks * tk * (1 / ep + 1 / max(exitpx, 1e-9))
                     ret = (exitpx - ep) / ep - fee - slip
-                    trades.append({'d': d, 'ret': ret, 'r': 'EXIT', 'dir': pos['dir']})
+                    trades.append({'d': d, 'ret': ret, 'r': 'EXIT', 'dir': pos['dir'],
+                                   'ed': pos['ed'], 'et': pos['et'], 'ei': pos['ei']})
                     pos = None
                     last_exit_idx = i
                     continue
@@ -775,9 +776,9 @@ def simulate_index(long_bars, short_lookup, trend_lookup, signal_fn,
                 if sig_dir == 'S':
                     ib = short_lookup.get(dt)
                     if ib is not None:
-                        pos = {'dir': 'S', 'p': ib['close'], 'ei': i, 'peak': 0.0}
+                        pos = {'dir': 'S', 'p': ib['close'], 'ei': i, 'peak': 0.0, 'ed': d, 'et': t}
                 elif sig_dir == 'L':
-                    pos = {'dir': 'L', 'p': bar['close'], 'ei': i, 'peak': 0.0}
+                    pos = {'dir': 'L', 'p': bar['close'], 'ei': i, 'peak': 0.0, 'ed': d, 'et': t}
 
     if pos:
         ep = pos['p']
@@ -787,7 +788,8 @@ def simulate_index(long_bars, short_lookup, trend_lookup, signal_fn,
             tk = long_tick if pos['dir'] == 'L' else short_tick
             slip = slip_ticks * tk * (1 / ep + 1 / max(exitpx, 1e-9))
             trades.append({'d': long_bars[-1]['d'],
-                           'ret': (exitpx - ep) / ep - fee - slip, 'r': 'EOD', 'dir': pos['dir']})
+                           'ret': (exitpx - ep) / ep - fee - slip, 'r': 'EOD', 'dir': pos['dir'],
+                           'ed': pos['ed'], 'et': pos['et'], 'ei': pos['ei']})
 
     return {'trades': trades}
 

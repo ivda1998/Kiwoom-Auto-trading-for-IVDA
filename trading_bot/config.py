@@ -73,6 +73,13 @@ VM_GUARD_INTRADAY    = float(_os.environ.get("VM_GUARD_INTRADAY", "-0.02"))  # �
 VM_GUARD_STOPS_TODAY = int(_os.environ.get("VM_GUARD_STOPS_TODAY", "2"))     # 당일 VM 손절 횟수 이상
 VM_GUARD_STOPS_3D    = int(_os.environ.get("VM_GUARD_STOPS_3D", "3"))        # 직전 3거래일 손절 횟수 이상
 
+# 지수 레버리지 '섀도 에이전트' (skills/agent_advisor.py) — 진입 신호마다 규칙·LLM 에이전트가
+# 사이즈 배수를 매겨 data/agent_shadow.csv에 기록만 한다(주문 불변). 2026-10-25 연구 계획 4단계.
+AGENT_SHADOW_ENABLED = _os.environ.get("AGENT_SHADOW_ENABLED", "false").lower() == "true"
+AGENT_LLM_MODEL      = _os.environ.get("AGENT_LLM_MODEL", "claude-sonnet-5-5")
+AGENT_LLM_MAX_CALLS  = int(_os.environ.get("AGENT_LLM_MAX_CALLS", "10"))    # 하루 LLM 호출 상한
+AGENT_MESSAGES_DB    = _os.environ.get("AGENT_MESSAGES_DB", "/home/ubuntu/invest/data/messages.db")  # 읽기 전용
+
 # 모의투자 / 실서버 도메인 자동 선택 (키움 REST API)
 API_BASE_URL = (
     "https://mockapi.kiwoom.com"   # 모의투자

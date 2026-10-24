@@ -3,3 +3,6 @@ websockets>=12.0
 pandas>=2.0.0
 numpy>=1.26.0
 holidays>=0.46
+# 섀도 에이전트(선택, AGENT_SHADOW_ENABLED=true 일 때만 사용)
+anthropic==0.76.0
+finance-datareader>=0.9.50

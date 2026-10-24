@@ -141,6 +141,15 @@ class LeverageIndexAgent(BaseAgent):
         if direction == "INVERSE" and not self._short_price_ok(harness, context):
             return
 
+        # 섀도 에이전트: 기록만(별도 스레드, 주문·지연 영향 없음). 꺼져 있으면 None.
+        try:
+            from skills.agent_advisor import get_advisor
+            adv = get_advisor()
+            if adv:
+                adv.on_signal(direction, candles, self._daily_trend_cache.get("rows"))
+        except Exception as e:
+            logger.debug(f"[LeverageIndexAgent] 섀도 에이전트 호출 실패(무시): {e}")
+
         self._enter(direction, context)
 
     def _short_price_ok(self, harness, context) -> bool:
@@ -216,7 +225,7 @@ class LeverageIndexAgent(BaseAgent):
         mas = sum(closes[-slow_ma:]) / slow_ma
         trend = "UP" if maf > mas else ("DOWN" if maf < mas else None)
 
-        self._daily_trend_cache = {"date": today, "trend": trend}
+        self._daily_trend_cache = {"date": today, "trend": trend, "rows": rows}   # rows: 섀도 에이전트용(오늘 제외)
         logger.info(f"[LeverageIndexAgent] 일봉추세 갱신: MA{fast_ma}={maf:,.1f} MA{slow_ma}={mas:,.1f} → {trend}")
         return trend
 
