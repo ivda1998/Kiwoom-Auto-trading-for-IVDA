@@ -60,6 +60,11 @@ class VMPosition:
     order_no: str = ""
     created_at: str = ""  # json의 created_at (같은 날 중복 매수 방지용)
     tp_ord_no: str = ""   # TP 지정가 매도 주문 번호 (SL 발동 시 취소용)
+    # 목표가 분할매도(2026-10-25): 1차 목표가에서 tp1_qty주, 나머지는 2차 목표가. 손절가는 그대로.
+    take_profit_2: float = 0   # 2차 목표가 (0이면 분할 없음)
+    tp1_qty: int = 0           # 1차 목표가 매도 수량 (0이면 분할 없음 = 1차에서 전량)
+    tp1_done: bool = False     # 1차 분할매도 완료 → take_profit이 2차 목표가로 바뀐 상태
+    tp2_ord_no: str = ""       # 실전: 2차 목표가 지정가 매도 주문 번호
 
     def pnl(self, current_price: float) -> float:
         return (current_price - self.entry_price) * self.qty
@@ -87,6 +92,17 @@ class VMPendingOrder:
     tp_ord_no:   str = ""
     filled:      bool = False
     fill_price:  int = 0
+    take_profit_2: float = 0
+
+
+def split_tp_qty(qty: int, tp1: float, tp2: float) -> int:
+    """1차 목표가에서 팔 수량. 분할 조건(설정 켜짐·2차>1차>0·2주 이상)이 아니면 0(=1차 전량).
+    백테스트(2026-10-25, 목표가청산 40건): 1차 절반 + 2차 나머지 + 원손절 유지가 건당 +2.1~2.2%p."""
+    if not getattr(config, "VM_SPLIT_TP", True):
+        return 0
+    if not tp1 or not tp2 or tp2 <= tp1 or qty < 2:
+        return 0
+    return qty // 2
 
 
 def _load_dataclass(cls, item: dict):
@@ -246,6 +262,7 @@ class VMPositionManager(BaseSkill):
         stop_loss: float,
         take_profit: float,
         created_at: str,
+        take_profit_2: float = 0,
     ) -> str:
         """지정가 매수 등록. 실전: API 발주. 모의투자: 가상 pending(틱 도달 시 시장가 체결)."""
         import time as _time
@@ -284,6 +301,7 @@ class VMPositionManager(BaseSkill):
             take_profit=take_profit,
             created_at=created_at,
             placed_at=datetime.now().isoformat(),
+            take_profit_2=take_profit_2 or 0,
         )
         self.save_pending()
         return ord_no
@@ -354,20 +372,27 @@ class VMPositionManager(BaseSkill):
             entered_at=datetime.now().isoformat(),
             order_no=pending.ord_no,
             created_at=pending.created_at,
+            take_profit_2=pending.take_profit_2 or 0,
         )
+        pos.tp1_qty = split_tp_qty(pos.qty, pos.take_profit, pos.take_profit_2)
         self._positions[position_id] = pos
         self.risk.on_buy(pending.qty * fill_price)
 
         tp_price = int(pending.take_profit)
-        tp_ord_no = self.place_limit_sell(pending.code, pending.qty, tp_price)
+        tp_ord_no = self.place_limit_sell(pending.code, pos.tp1_qty or pending.qty, tp_price)
         pending.tp_ord_no = tp_ord_no
         pos.tp_ord_no = tp_ord_no
+        if pos.tp1_qty:
+            pos.tp2_ord_no = self.place_limit_sell(
+                pending.code, pos.qty - pos.tp1_qty, int(pos.take_profit_2))
 
         self.save()
         self.save_pending()
         logger.info(
             f"[VMManager] fill 확인: {pending.name}({pending.code}) {pending.tranche}차 "
             f"{pending.qty}주 @ {fill_price:,}원 tp_ord={tp_ord_no}"
+            + (f" | 분할: 1차 {pos.tp1_qty}주@{int(pos.take_profit):,} / "
+               f"2차 {pos.qty - pos.tp1_qty}주@{int(pos.take_profit_2):,}" if pos.tp1_qty else "")
         )
         return True
 
@@ -389,6 +414,66 @@ class VMPositionManager(BaseSkill):
         else:   # 반복 실패는 경고로만(오류 알림 폭주 방지)
             logger.warning(f"[VMManager] [Mock] 시장가 매수 실패 {fails}회: {tag} — "
                            f"{self._buy_backoff.wait_left(pending.ord_no)}초 뒤 재시도")
+
+    def is_split_tp1_pending(self, position_id: str) -> bool:
+        """1차 목표가 분할매도가 아직 남은 포지션인지."""
+        pos = self._positions.get(position_id)
+        return bool(pos and pos.tp1_qty and not pos.tp1_done and pos.tp1_qty < pos.qty)
+
+    def take_partial_tp1(self, position_id: str, price: float):
+        """1차 목표가 도달: tp1_qty주만 매도하고, 남은 수량의 목표가를 2차로 바꾼다(손절가 유지).
+        실전(거래소에 1차 지정가 매도가 걸린 경우)은 체결 추론만, 모의는 시장가 매도.
+        반환: (매도수량, 손익) 또는 None(실패·해당 없음)."""
+        pos = self._positions.get(position_id)
+        if not pos or not self.is_split_tp1_pending(position_id):
+            return None
+        q1 = pos.tp1_qty
+        is_real_tp = pos.tp_ord_no and not pos.tp_ord_no.startswith("SIM_")
+        if not is_real_tp:
+            if not self._sell_backoff.ready(position_id):
+                return None
+            ret, _ = self.kiwoom.send_order(
+                order_name=f"VM1차분할매도_{pos.code}",
+                screen_no=str(self._next_screen()),
+                code=pos.code, qty=q1, price=0, order_type=2, hoga_type="03",
+            )
+            if ret != 0:
+                fails = self._sell_backoff.fail(position_id)
+                (logger.error if fails == 1 else logger.warning)(
+                    f"[VMManager] 1차 분할매도 실패{'' if fails == 1 else f' {fails}회'}: "
+                    f"{pos.name}({pos.code}) ret={ret} — {self._sell_backoff.wait_left(position_id)}초 뒤 재시도")
+                return None
+            self._sell_backoff.clear(position_id)
+        pnl = (price - pos.entry_price) * q1
+        self.risk.on_sell(pnl)
+        pos.qty -= q1
+        pos.tp1_done = True
+        pos.take_profit = pos.take_profit_2
+        pos.tp_ord_no = pos.tp2_ord_no
+        pos.tp2_ord_no = ""
+        self.save()
+        logger.info(
+            f"[VMManager] 1차 목표가 분할매도: {pos.name}({pos.code}) {q1}주 @ {price:,}원 "
+            f"손익:{pnl:+,.0f} → 남은 {pos.qty}주 목표 {int(pos.take_profit):,}원, "
+            f"손절 {int(pos.stop_loss):,}원 유지"
+        )
+        return q1, pnl
+
+    def cancel_tp_orders(self, position_id: str):
+        """실전 TP 지정가 매도 주문(1차·2차) 취소 — 손절·강제청산 전에 호출. SIM_ 주문은 무시."""
+        pos = self._positions.get(position_id)
+        if not pos:
+            return
+        q_tp = pos.tp1_qty if (pos.tp1_qty and not pos.tp1_done) else pos.qty
+        orders = [(pos.tp_ord_no, q_tp)]
+        if pos.tp2_ord_no:
+            orders.append((pos.tp2_ord_no, pos.qty - pos.tp1_qty))
+        for ord_no, q in orders:
+            if ord_no and not ord_no.startswith("SIM_") and q > 0:
+                try:
+                    self.kiwoom.cancel_order(ord_no, pos.code, q)
+                except Exception as e:
+                    logger.warning(f"[VMManager] TP 주문 취소 실패 {pos.code} ord={ord_no}: {e}")
 
     def infer_tp_filled(self, position_id: str, fill_price: float):
         """TP 지정가 매도 체결 추론 — 주문 재발행 없이 포지션 제거."""
@@ -465,6 +550,7 @@ class VMPositionManager(BaseSkill):
         take_profit: float,
         created_at: str = "",
         amount: int = None,
+        take_profit_2: float = 0,
     ) -> bool:
         """
         시장가 매수.
@@ -508,7 +594,9 @@ class VMPositionManager(BaseSkill):
                 entered_at=datetime.now().isoformat(),
                 order_no=screen_no,
                 created_at=created_at,
+                take_profit_2=take_profit_2 or 0,
             )
+            pos.tp1_qty = split_tp_qty(qty, take_profit, take_profit_2)
             self._positions[position_id] = pos
             self.risk.on_buy(cost)
             self.save()
@@ -595,13 +683,21 @@ class VMPositionManager(BaseSkill):
 
     # ── SL/TP 업데이트 ────────────────────────────────────────────────────────
 
-    def update_sltp(self, code: str, stop_loss: float, take_profit: float):
-        """동일 종목 재추천 시 열린 포지션의 SL/TP를 최신값으로 갱신."""
+    def update_sltp(self, code: str, stop_loss: float, take_profit: float, take_profit_2: float = 0):
+        """동일 종목 재추천 시 열린 포지션의 SL/TP를 최신값으로 갱신.
+        1차 분할매도가 끝난 포지션은 목표가를 2차(새 값이 있으면 새 2차)로 유지한다."""
         changed = False
         for pos in self._positions.values():
             if pos.code == code:
                 pos.stop_loss = stop_loss
-                pos.take_profit = take_profit
+                if take_profit_2:
+                    pos.take_profit_2 = take_profit_2
+                if pos.tp1_done:
+                    pos.take_profit = pos.take_profit_2 or take_profit
+                else:
+                    pos.take_profit = take_profit
+                    if pos.tp1_qty and not (pos.take_profit_2 and pos.take_profit_2 > take_profit):
+                        pos.tp1_qty = 0   # 새 1차가 2차 이상이면 분할 해제(1차 전량)
                 changed = True
                 logger.info(
                     f"[VMManager] SL/TP 업데이트: {pos.name}({code}) "

@@ -208,7 +208,8 @@ def get_custom_targets(filter_today: bool = False) -> dict:
                     code = pick.get("code", "")
                     if not code or code in targets:
                         continue
-                    holding_period = pick.get("holding_period", "")
+                    # "단기 ~ 중기"처럼 공백이 섞여 와도 매칭되게 공백 제거 (2026-10-25)
+                    holding_period = _re.sub(r"\s+", "", pick.get("holding_period") or "")
                     # "단기~중기" 등 복합 표현을 그대로 찾고, 없으면 앞 단어만 시도
                     holding_days = _HOLDING_MAP.get(holding_period)
                     if holding_days is None:
@@ -324,6 +325,8 @@ MAX_TRADES_PER_STOCK = 5      # 전략 3 등 중복(재) 매수 허용 (기본 1
 
 # VM picks 고정 매수 금액 (기본 100만원, .env에서 조정 가능)
 VM_TRADE_AMOUNT = int(_os.environ.get("VM_TRADE_AMOUNT", "1000000"))
+# 목표가 분할매도: 1차 목표가에서 절반, 나머지는 2차 목표가(손절가 유지). false면 기존처럼 1차 전량.
+VM_SPLIT_TP = _os.environ.get("VM_SPLIT_TP", "true").lower() == "true"
 
 # ─────────────────────────────────────────
 # 시가총액 필터

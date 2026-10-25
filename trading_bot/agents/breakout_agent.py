@@ -372,10 +372,8 @@ class BreakoutTradingAgent(BaseAgent):
             sl_price = pos.stop_loss  or 0
             tp_price = pos.take_profit or 0
             if sl_price > 0 and price <= sl_price:
-                tp_ord_no = pos.tp_ord_no
-                # SIM_ prefix는 가상 주문이므로 취소 API 불필요 (모의투자)
-                if tp_ord_no and not tp_ord_no.startswith("SIM_"):
-                    harness.kiwoom.cancel_order(tp_ord_no, code, pos.qty)
+                # 실전 TP 지정가(1차·2차) 취소. SIM_ 가상 주문은 내부에서 건너뜀
+                vm_manager.cancel_tp_orders(pos.position_id)
                 ok = vm_manager.sell_vm(pos.position_id, price, "손절")
                 if ok:
                     pnl = pos.pnl(price)
@@ -391,7 +389,27 @@ class BreakoutTradingAgent(BaseAgent):
                     )
                 continue
 
+            # 1차 목표가 분할매도: 절반만 팔고 남은 수량은 2차 목표가·원손절로 계속 보유
+            if tp_price > 0 and price >= tp_price and vm_manager.is_split_tp1_pending(pos.position_id):
+                part = vm_manager.take_partial_tp1(pos.position_id, price)
+                if part:
+                    q1, pnl = part
+                    if notifier:
+                        notifier.send(
+                            f"🟢 <b>VM 1차 목표가 분할매도</b> [{pos.name}({code})]\n"
+                            f"{q1}주 @ {price:,}원 | 손익: {pnl:+,.0f}원\n"
+                            f"남은 {pos.qty}주 → 2차 목표가 {int(pos.take_profit):,}원 / "
+                            f"손절가 {int(pos.stop_loss):,}원 유지"
+                        )
+                    self.trade_logger.log_trade(
+                        code=code, name=pos.name, side="SELL",
+                        qty=q1, price=price,
+                        pnl=pnl, pnl_rate=pos.pnl_rate(price), reason="1차목표가분할"
+                    )
+                continue
+
             if tp_price > 0 and price >= tp_price:
+                tp_reason = "2차목표가청산" if pos.tp1_done else "목표가청산"
                 # 실전: tp_ord_no로 지정가 매도가 거래소에 등록돼 있음 → fill 추론
                 # 모의투자: tp_ord_no가 "SIM_" prefix이므로 실제 시장가 매도 필요
                 is_real_tp = pos.tp_ord_no and not pos.tp_ord_no.startswith("SIM_")
@@ -401,27 +419,27 @@ class BreakoutTradingAgent(BaseAgent):
                         pnl = closed.pnl(price)
                         if notifier:
                             notifier.send(
-                                f"🟢 <b>VM 목표가 청산</b> [{closed.name}({code})]\n"
+                                f"🟢 <b>VM {tp_reason}</b> [{closed.name}({code})]\n"
                                 f"{closed.qty}주 @ {price:,}원 | 손익: {pnl:+,.0f}원"
                             )
                         self.trade_logger.log_trade(
                             code=code, name=closed.name, side="SELL",
                             qty=closed.qty, price=price,
-                            pnl=pnl, pnl_rate=closed.pnl_rate(price), reason="목표가청산"
+                            pnl=pnl, pnl_rate=closed.pnl_rate(price), reason=tp_reason
                         )
                 else:
-                    ok = vm_manager.sell_vm(pos.position_id, price, "목표가청산")
+                    ok = vm_manager.sell_vm(pos.position_id, price, tp_reason)
                     if ok:
                         pnl = pos.pnl(price)
                         if notifier:
                             notifier.send(
-                                f"🟢 <b>VM 목표가 청산</b> [{pos.name}({code})]\n"
+                                f"🟢 <b>VM {tp_reason}</b> [{pos.name}({code})]\n"
                                 f"{pos.qty}주 @ {price:,}원 | 손익: {pnl:+,.0f}원"
                             )
                         self.trade_logger.log_trade(
                             code=code, name=pos.name, side="SELL",
                             qty=pos.qty, price=price,
-                            pnl=pnl, pnl_rate=pos.pnl_rate(price), reason="목표가청산"
+                            pnl=pnl, pnl_rate=pos.pnl_rate(price), reason=tp_reason
                         )
 
         # 2. 지정가 주문 fill 추론 (pending 주문)
@@ -520,11 +538,12 @@ class BreakoutTradingAgent(BaseAgent):
         half_amount = max(1, getattr(config, "VM_TRADE_AMOUNT", 1_000_000) // 2)
         sl   = conf.get("stop_loss") or 0
         tp   = conf.get("take_profit") or 0
+        tp2  = conf.get("take_profit_2") or 0
         name = conf.get("name", code)
         qty1 = max(1, half_amount // threshold2)
         qty2 = max(1, half_amount // threshold1)
-        ord1 = vm_manager.place_limit_buy(code, name, 1, threshold2, qty1, sl, tp, created_at)
-        ord2 = vm_manager.place_limit_buy(code, name, 2, threshold1, qty2, sl, tp, created_at)
+        ord1 = vm_manager.place_limit_buy(code, name, 1, threshold2, qty1, sl, tp, created_at, take_profit_2=tp2)
+        ord2 = vm_manager.place_limit_buy(code, name, 2, threshold1, qty2, sl, tp, created_at, take_profit_2=tp2)
         if ord1 or ord2:
             logger.info(
                 f"[Agent] VM 지정가 매수 발주: {name}({code}) "
@@ -532,7 +551,7 @@ class BreakoutTradingAgent(BaseAgent):
             )
             if notifier:
                 sl_str = f"{sl:,}원" if sl else "없음"
-                tp_str = f" | 목표가: {tp:,}원" if tp else ""
+                tp_str = (f" | 목표가: {tp:,}원" if tp else "") + (f" → 2차 {tp2:,}원(절반)" if tp and tp2 > tp else "")
                 notifier.send(
                     f"✅ <b>VM 분할매수 발주</b> [{name}({code})]\n"
                     f"1차(상): {threshold2:,}원 ({qty1}주)\n"

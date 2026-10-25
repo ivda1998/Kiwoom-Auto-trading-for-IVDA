@@ -862,6 +862,7 @@ class TradingBot:
                     p["code"]: {
                         "stop_loss":   p.get("stop_loss", 0),
                         "take_profit": p.get("take_profit_1", 0),
+                        "take_profit_2": p.get("take_profit_2", 0),
                         "name":        p.get("name", p.get("code", "")),
                     }
                     for p in new_picks["picks"] if p.get("code")
@@ -874,7 +875,7 @@ class TradingBot:
                 _sl = _conf.get("stop_loss", 0)
                 _tp = _conf.get("take_profit", 0)
                 if _sl and _tp and self.vm_manager.has_any(_code):
-                    self.vm_manager.update_sltp(_code, _sl, _tp)
+                    self.vm_manager.update_sltp(_code, _sl, _tp, _conf.get("take_profit_2") or 0)
                     logger.info(f"[Bot] VM 포지션 SL/TP 업데이트: {_code} SL={_sl:,} TP={_tp:,}")
                     self.notifier.send(
                         f"🔄 <b>SL/TP 업데이트</b> [{_conf.get('name', _code)}({_code})]\n"
@@ -2676,6 +2677,7 @@ class TradingBot:
                 take_profit=item["take_profit"],
                 created_at=item["created_at"],
                 amount=item.get("amount"),
+                take_profit_2=item.get("take_profit_2") or 0,
             )
             if ok:
                 vm_pos_list = self.vm_manager.get_by_code(code)
@@ -2823,6 +2825,7 @@ class TradingBot:
                     p["code"]: {
                         "stop_loss":   p.get("stop_loss", 0),
                         "take_profit": p.get("take_profit_1", 0),
+                        "take_profit_2": p.get("take_profit_2", 0),
                         "buy_min":     p.get("buy_min"),
                         "buy_max":     p.get("buy_max"),
                         "name":        p.get("name", p.get("code", "")),
@@ -2838,7 +2841,7 @@ class TradingBot:
                 tp   = conf.get("take_profit", 0)
                 name = conf.get("name", code)
                 if sl and tp and self.vm_manager.has_any(code):
-                    self.vm_manager.update_sltp(code, sl, tp)
+                    self.vm_manager.update_sltp(code, sl, tp, conf.get("take_profit_2") or 0)
                     self.notifier.send(
                         f"🔄 <b>SL/TP 업데이트</b> [{name}({code})]\n"
                         f"손절가: {sl:,}원 | 목표가: {tp:,}원"
