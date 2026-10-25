@@ -164,7 +164,9 @@ def get_custom_targets(filter_today: bool = False) -> dict:
     지원하는 vm_picks.json 형식:
       포맷 A (플랫): {"000660": {"name":..., "buy_min":..., "take_profit":..., ...}}
       포맷 B (배열): {"date":"...", "picks":[{"code":"000660","name":...,
-                      "take_profit_1":..., "take_profit_2":..., "holding_period":"단기",...}]}
+                      "take_profit_1":..., "take_profit_2":..., "holding_period":"단기",
+                      "holding_days":3,...}]}
+      holding_days(정수, 달력일)가 있으면 그대로 쓰고, 없으면 holding_period 문구를 변환표로 바꾼다.
     """
     targets = dict(CUSTOM_TARGETS)
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -208,12 +210,19 @@ def get_custom_targets(filter_today: bool = False) -> dict:
                     code = pick.get("code", "")
                     if not code or code in targets:
                         continue
-                    # "단기 ~ 중기"처럼 공백이 섞여 와도 매칭되게 공백 제거 (2026-10-25)
-                    holding_period = _re.sub(r"\s+", "", pick.get("holding_period") or "")
-                    # "단기~중기" 등 복합 표현을 그대로 찾고, 없으면 앞 단어만 시도
-                    holding_days = _HOLDING_MAP.get(holding_period)
-                    if holding_days is None:
-                        holding_days = _HOLDING_MAP.get(holding_period.split("~")[0], 3)
+                    # invest(ddo)가 보유 기간 문구에서 가장 짧은 달력일 수를 holding_days 로 넘긴다 (2026-10-25)
+                    try:
+                        holding_days = int(pick.get("holding_days") or 0)
+                    except (TypeError, ValueError):
+                        holding_days = 0
+                    if holding_days <= 0:
+                        # holding_days 가 없는 예전 파일: 문구 변환표로 처리
+                        # "단기 ~ 중기"처럼 공백이 섞여 와도 매칭되게 공백 제거
+                        holding_period = _re.sub(r"\s+", "", pick.get("holding_period") or "")
+                        # "단기~중기" 등 복합 표현을 그대로 찾고, 없으면 앞 단어만 시도
+                        holding_days = _HOLDING_MAP.get(holding_period)
+                        if holding_days is None:
+                            holding_days = _HOLDING_MAP.get(holding_period.split("~")[0], 3)
                     ref_price = _parse_price(pick.get("current_price"))
                     raw_min   = _parse_price(pick.get("buy_min"))
                     raw_max   = _parse_price(pick.get("buy_max"))
