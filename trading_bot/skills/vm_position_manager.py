@@ -65,6 +65,7 @@ class VMPosition:
     tp1_qty: int = 0           # 1차 목표가 매도 수량 (0이면 분할 없음 = 1차에서 전량)
     tp1_done: bool = False     # 1차 분할매도 완료 → take_profit이 2차 목표가로 바뀐 상태
     tp2_ord_no: str = ""       # 실전: 2차 목표가 지정가 매도 주문 번호
+    tp1_date: str = ""         # 1차 분할매도 체결일 YYYY-MM-DD (남은 수량 보유기간 계산용)
 
     def pnl(self, current_price: float) -> float:
         return (current_price - self.entry_price) * self.qty
@@ -103,6 +104,18 @@ def split_tp_qty(qty: int, tp1: float, tp2: float) -> int:
     if not tp1 or not tp2 or tp2 <= tp1 or qty < 2:
         return 0
     return qty // 2
+
+
+def weekdays_after(start: str, today) -> int:
+    """start(YYYY-MM-DD) 다음날부터 today까지의 평일 수 (공휴일은 구분 안 함)."""
+    from datetime import date as _date, datetime as _dt, timedelta as _td
+    d0 = _dt.strptime(start, "%Y-%m-%d").date()
+    d1 = today.date() if hasattr(today, "date") else today
+    n, d = 0, d0 + _td(days=1)
+    while d <= d1:
+        n += d.weekday() < 5
+        d += _td(days=1)
+    return n
 
 
 def _load_dataclass(cls, item: dict):
@@ -448,6 +461,7 @@ class VMPositionManager(BaseSkill):
         self.risk.on_sell(pnl)
         pos.qty -= q1
         pos.tp1_done = True
+        pos.tp1_date = datetime.now().strftime("%Y-%m-%d")
         pos.take_profit = pos.take_profit_2
         pos.tp_ord_no = pos.tp2_ord_no
         pos.tp2_ord_no = ""
@@ -458,6 +472,18 @@ class VMPositionManager(BaseSkill):
             f"손절 {int(pos.stop_loss):,}원 유지"
         )
         return q1, pnl
+
+    def remainder_hold_left(self, position_id: str, today=None) -> int:
+        """1차 분할 후 남은 수량의 장마감 보유 잔여 거래일. 0이면 보유 규칙 해당 없음(기존 규칙대로).
+        1차 체결일 장마감=0일째, 이후 평일 VM_TP2_HOLD_DAYS일째 장마감에 청산 대상으로 돌아온다."""
+        pos = self._positions.get(position_id)
+        hold = getattr(config, "VM_TP2_HOLD_DAYS", 0)
+        if not pos or not pos.tp1_done or not pos.tp1_date or hold <= 0:
+            return 0
+        try:
+            return max(0, hold - weekdays_after(pos.tp1_date, today or datetime.now()))
+        except Exception:
+            return 0
 
     def cancel_tp_orders(self, position_id: str):
         """실전 TP 지정가 매도 주문(1차·2차) 취소 — 손절·강제청산 전에 호출. SIM_ 주문은 무시."""

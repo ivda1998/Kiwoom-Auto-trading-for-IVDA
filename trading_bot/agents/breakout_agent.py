@@ -400,6 +400,8 @@ class BreakoutTradingAgent(BaseAgent):
                             f"{q1}주 @ {price:,}원 | 손익: {pnl:+,.0f}원\n"
                             f"남은 {pos.qty}주 → 2차 목표가 {int(pos.take_profit):,}원 / "
                             f"손절가 {int(pos.stop_loss):,}원 유지"
+                            + (f"\n(남은 수량 최대 {config.VM_TP2_HOLD_DAYS}거래일 보유)"
+                               if getattr(config, "VM_TP2_HOLD_DAYS", 0) > 0 else "")
                         )
                     self.trade_logger.log_trade(
                         code=code, name=pos.name, side="SELL",

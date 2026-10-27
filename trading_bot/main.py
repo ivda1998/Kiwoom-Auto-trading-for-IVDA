@@ -675,6 +675,13 @@ class TradingBot:
         is_auto_close = (reason == "시간외청산")
         for pid, vm_pos in list(self.vm_manager.get_all().items()):
             if is_auto_close:
+                left = self.vm_manager.remainder_hold_left(pid)
+                if left > 0:
+                    logger.info(
+                        f"[Bot] VM 1차 분할 후 남은 수량 보유 (청산까지 {left}거래일): "
+                        f"{vm_pos.name}({vm_pos.code})"
+                    )
+                    continue
                 vm_conf     = config.get_custom_targets().get(vm_pos.code, {})
                 holding_days = vm_conf.get("holding_days", 0)
                 if holding_days > 0 and vm_pos.created_at:
@@ -1246,6 +1253,13 @@ class TradingBot:
             # VM 포지션 장마감 처리 (holding_days 미만은 오버나잇 유지)
             last_prices = self.harness.get_context().get("last_prices", {})
             for pid, vm_pos in list(self.vm_manager.get_all().items()):
+                left = self.vm_manager.remainder_hold_left(pid, today_dt)
+                if left > 0:
+                    logger.info(
+                        f"[Bot] VM 1차 분할 후 남은 수량 보유 (청산까지 {left}거래일): "
+                        f"{vm_pos.name}({vm_pos.code})"
+                    )
+                    continue
                 vm_conf = config.get_custom_targets().get(vm_pos.code, {})
                 holding_days = vm_conf.get("holding_days", 0)
                 if holding_days > 0 and vm_pos.created_at:

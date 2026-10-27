@@ -336,6 +336,9 @@ MAX_TRADES_PER_STOCK = 5      # 전략 3 등 중복(재) 매수 허용 (기본 1
 VM_TRADE_AMOUNT = int(_os.environ.get("VM_TRADE_AMOUNT", "1000000"))
 # 목표가 분할매도: 1차 목표가에서 절반, 나머지는 2차 목표가(손절가 유지). false면 기존처럼 1차 전량.
 VM_SPLIT_TP = _os.environ.get("VM_SPLIT_TP", "true").lower() == "true"
+# 1차 분할 후 남은 수량은 추천 여부와 관계없이 1차 체결일 이후 N거래일(평일) 동안 장마감 청산하지 않는다.
+# 손절가·2차 목표가는 그대로 작동. 0이면 기존처럼 재추천이 없으면 장마감 청산. (2026-10-27 백테스트: 3일 +2.0%p/건, t 3.5)
+VM_TP2_HOLD_DAYS = int(_os.environ.get("VM_TP2_HOLD_DAYS", "3"))
 
 # ─────────────────────────────────────────
 # 시가총액 필터
