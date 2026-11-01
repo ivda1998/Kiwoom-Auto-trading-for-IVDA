@@ -553,6 +553,145 @@ def gate_meta(ctx, mode='streak', k=3, rest=1, lb=20):
 
 
 # ─────────────────────────────────────────
+# 2026-11-02 주간 패밀리 #2: 추가 진입(additive)·다른 정보원 (일봉 변동폭 수축·장대봉·실패 돌파·압축/확장·상대강도·요일)
+# ─────────────────────────────────────────
+
+def _prior_ohlc(ctx, n):
+    """d일 '이전' 일봉 OHLC n개(오래된 순). 일봉 CSV 기준, 당일 미포함."""
+    import bisect
+    ohlc = ctx.daily_ohlc()
+    ds = sorted(ohlc)
+    def f(d):
+        k = bisect.bisect_left(ds, d)
+        return [ohlc[x] for x in ds[k - n:k]] if k >= n else None
+    return _cached(f)
+
+
+def entry_nr_break(ctx, n=4, use_gate=True):
+    """NR(n) 변동폭 수축 돌파: 전일 고저폭이 최근 n일 중 최소(변동성 압축)인 날, 전일 고/저를 장중 돌파하면
+    1일 1회 진입 — 압축 뒤 확장(Crabel NR4/NR7) 가설. 일봉 고저를 쓰는 점이 전일 3분봉 고저 돌파(pdhl)와 다름."""
+    prior = _prior_ohlc(ctx, n)
+    used = set()
+    def fn(i, trend):
+        d = ctx.bars[i]['d']
+        if d in used:
+            return None
+        w = prior(d)
+        if not w:
+            return None
+        rngs = [h - l for (_, h, l, _) in w]
+        if rngs[-1] != min(rngs):
+            return None
+        ph, pl = w[-1][1], w[-1][2]
+        sig = 'L' if ctx.closes[i] > ph else ('S' if ctx.closes[i] < pl else None)
+        if sig and use_gate and not ((sig == 'L' and trend == 'UP') or (sig == 'S' and trend == 'DOWN')):
+            return None
+        if sig:
+            used.add(d)
+        return sig
+    return fn
+
+
+def entry_bigday(ctx, th=0.02, use_gate=True):
+    """전일 장대봉 지속: 전일 종가/전전일 종가 ±th 이상이면 첫 판정봉(09:30~)에서 같은 방향 1회 → EOD 청산
+    (큰 움직임 뒤 후속 매매·모멘텀 이월 가설)."""
+    used = set()
+    def fn(i, trend):
+        b = ctx.bars[i]; d = b['d']
+        if d in used or b['t'] < '0930':
+            return None
+        used.add(d)
+        c = ctx.prior_closes(d)
+        if len(c) < 2:
+            return None
+        r = c[-1] / c[-2] - 1
+        sig = 'L' if r >= th else ('S' if r <= -th else None)
+        if sig and use_gate and not ((sig == 'L' and trend == 'UP') or (sig == 'S' and trend == 'DOWN')):
+            return None
+        return sig
+    return fn
+
+
+def entry_orb_fail(ctx, minutes=30):
+    """오프닝레인지 실패 돌파 역행: 범위 상단을 한 번 돌파한 뒤 종가가 범위 안으로 되돌아오면 숏(하단은 롱)
+    1일 1회. 돌파 추종(ORB)의 반대편 — 함정(false breakout) 매매. 게이트 무관."""
+    end_t = f"{9 + (minutes // 60):02d}{minutes % 60:02d}"
+    n = len(ctx.bars)
+    rng, cmax, cmin = {}, [None] * n, [None] * n
+    for d, i0 in ctx.day_first.items():
+        hi = lo = None
+        j = i0
+        while j < n and ctx.bars[j]['d'] == d and ctx.bars[j]['t'] < end_t:
+            hi = max(hi or 0, ctx.bars[j]['high']); lo = min(lo or 10**12, ctx.bars[j]['low'])
+            j += 1
+        rng[d] = (hi, lo)
+        mx = mn = None
+        while j < n and ctx.bars[j]['d'] == d:   # j = 범위 종료 후 첫 봉
+            c = ctx.closes[j]
+            mx = c if mx is None else max(mx, c)
+            mn = c if mn is None else min(mn, c)
+            cmax[j], cmin[j] = mx, mn
+            j += 1
+    used = set()
+    def fn(i, trend):
+        d = ctx.bars[i]['d']
+        if d in used or i < 1 or cmax[i - 1] is None or ctx.bars[i - 1]['d'] != d:
+            return None
+        hi, lo = rng.get(d, (None, None))
+        if hi is None:
+            return None
+        c = ctx.closes[i]
+        sig = None
+        if cmax[i - 1] > hi and c < hi:
+            sig = 'S'
+        elif cmin[i - 1] < lo and c > lo:
+            sig = 'L'
+        if sig:
+            used.add(d)
+        return sig
+    return fn
+
+
+def filt_squeeze(ctx, pct=0.3, lb=100, recent=10, period=29, mult=1.0):
+    """변동성 압축 후 확장: 최근 recent봉 안에 BB 밴드폭이 직전 lb봉 분포의 하위 pct 이하(압축)였던 뒤의
+    돌파 신호만 통과(압축→확장 구간 선별). 이전의 '저변동 게이트'(전 구간 변동성 수준)와 달리 '직전 압축' 사건 기반."""
+    mid, up, lo = ctx.bb(period, mult)
+    def keep(i, trend, s):
+        a, b = i - recent, i - recent - lb
+        if b < 0 or mid[b] is None:
+            return True
+        w = lambda k: (up[k] - lo[k]) / mid[k]
+        cur = min(w(k) for k in range(a, i))
+        hist = [w(k) for k in range(b, a)]
+        return sum(1 for v in hist if v < cur) / len(hist) <= pct
+    return keep
+
+
+def filt_peer_rs(ctx):
+    """코스닥 대비 상대강도: 롱은 자기 당일수익률 ≥ 피어(지수↔코스닥)일 때, 숏은 ≤일 때만(리더 방향 추종).
+    기존 '피어 방향 동조'(절대 부호)와 달리 상대 강약 비교."""
+    p = ctx.peer()
+    def keep(i, trend, s):
+        if not p:
+            return True
+        b = ctx.bars[i]
+        pc0, pc = ctx.prev_close.get(b['d']), p['prev_close'].get(b['d'])
+        c1 = p['close_dt'].get(b['dt'])
+        if not (pc0 and pc and c1):
+            return True
+        own, oth = ctx.closes[i] / pc0 - 1, c1 / pc - 1
+        return own >= oth if s == 'L' else own <= oth
+    return keep
+
+
+def filt_dow(ctx, skip=0):
+    """요일 효과: skip 요일(0=월..4=금)의 신규진입 금지 — 주초 갭·주말 위험회피 등 요일 편향 가설."""
+    def keep(i, trend, s):
+        return ctx.bars[i]['dt'].weekday() != skip
+    return keep
+
+
+# ─────────────────────────────────────────
 # 빌더: spec → (trend_lookup, signal_fn, sim_kwargs)
 # ─────────────────────────────────────────
 
@@ -561,9 +700,11 @@ GATES = {'ma': gate_ma, 'close_ma': gate_close_ma, 'crash': gate_crash_override,
 FILTERS = {'stretch': filt_stretch, 'vwap': filt_vwap, 'dayret': filt_dayret,
            'window': filt_window, 'rangepos': filt_rangepos,
            'expiry': filt_expiry, 'tom': filt_tom, 'prior_clv': filt_prior_clv, 'flow': filt_flow,
-           'peer_intraday': filt_peer_intraday}
+           'peer_intraday': filt_peer_intraday, 'squeeze': filt_squeeze,
+           'peer_rs': filt_peer_rs, 'dow': filt_dow}
 ENTRIES = {'orb': entry_orb, 'pdhl': entry_pdhl, 'tsmom': entry_tsmom, 'bounce': entry_bounce,
-           'gap': entry_gap, 'state_short': entry_state_short}
+           'gap': entry_gap, 'state_short': entry_state_short,
+           'nr_break': entry_nr_break, 'bigday': entry_bigday, 'orb_fail': entry_orb_fail}
 
 
 def build(spec: dict, ctx: Ctx):
@@ -689,6 +830,31 @@ def catalog() -> list:
     H.append(_h('meta_curve_20', 'meta', '에쿼티커브 필터(섀도 최근20건 누적<0이면 휴식)',
                 '전략 자체 성과의 자기상관(엣지 레짐 지속성)을 이용 — 가격지표가 아닌 메타 정보',
                 {'gate': ['meta', {'mode': 'curve', 'lb': 20}]}))
+    # ── E. 2026-11-02 주간 패밀리 #2: 추가 진입(additive)·새 메커니즘
+    for n in (4, 7):
+        H.append(_h(f'daily_nr{n}_break', 'daily_pattern', f'NR{n} 변동폭 수축 다음날 전일 고저 돌파',
+                    '전일 일봉 고저폭이 최근 n일 최소(변동성 압축)면 다음날 확장 — 일봉 고저 정보, 추가 진입 후보',
+                    {'entry': ['nr_break', {'n': n}], 'sim': {'entry_start': '09:15'}}, role='additive'))
+    for th in (0.02, 0.03):
+        H.append(_h(f'daily_bigday_{int(th*100)}', 'daily_pattern', f'전일 장대봉(±{th:.0%}) 방향 이월 +게이트',
+                    '큰 일봉 직후 후속 매매·모멘텀 이월(장대봉 다음날) — EOD 보유 추가 진입',
+                    {'entry': ['bigday', {'th': th}], 'sim': {'entry_start': '09:30', 'trail_gap': None}}, role='additive'))
+    for m in (30, 60):
+        H.append(_h(f'entry_orbfail_{m}', 'entry', f'오프닝레인지 {m}분 실패돌파 역행',
+                    '범위 돌파 후 범위 안으로 복귀 = 함정(false breakout) → 반대편 진입, ORB 추종의 거울 메커니즘',
+                    {'entry': ['orb_fail', {'minutes': m}],
+                     'sim': {'entry_start': f"{9 + m // 60:02d}:{m % 60:02d}"}}, role='additive'))
+    for pct in (0.15, 0.3):
+        H.append(_h(f'filt_squeeze_{int(pct*100)}', 'filter', f'직전 변동성 압축(밴드폭 하위 {pct:.0%}) 후 돌파만',
+                    '압축→확장 사건 기반 돌파 선별(전구간 변동성 수준 게이트와 다른 정보)',
+                    {'filters': [['squeeze', {'pct': pct}]]}))
+    H.append(_h('cross_peer_rs', 'cross_market', '코스닥 대비 상대강도 리더 방향만(롱=자기≥코스닥)',
+                '두 시장 중 더 강한 쪽이 이끄는 방향으로 돌파가 지속(상대강도 모멘텀) — 절대 동조와 다른 신호',
+                {'filters': [['peer_rs']]}))
+    for dow, nm in [(0, '월'), (4, '금')]:
+        H.append(_h(f'cal_dow_skip_{dow}', 'calendar', f'{nm}요일 신규진입 금지',
+                    '요일별 갭·주말 위험회피로 추세 지속성이 다를 수 있음(요일 효과, 미시험)',
+                    {'filters': [['dow', {'skip': dow}]]}))
     return H
 
 
