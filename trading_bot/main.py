@@ -2539,29 +2539,31 @@ class TradingBot:
                 "/invest 코드 entry=.. target=.. stop=.. — 개별주 계획매매 등록\n"
                 "/invest list|cancel 코드 — 계획 조회/취소\n"
                 "/apilimit — 오늘 API 호출량 조회 (1,700회 한도 중 사용량)\n"
-                "/sell — 전량 강제 청산\n"
+                "/sell — 전량 강제 청산 (메뉴에 없음, 직접 입력)\n"
                 "/reload — vm_picks.json 강제 재로드\n"
                 "/log — 최근 로그 15줄\n"
-                "/stop — 봇 종료\n"
+                "/stop — 봇 종료 (메뉴에 없음, 직접 입력)\n"
                 "/help — 이 도움말"
             )
 
-        n.register_command("ping",     cmd_ping)
-        n.register_command("status",   cmd_status)
-        n.register_command("pos",      cmd_pos)
-        n.register_command("lev",      cmd_lev)
-        n.register_command("levidx",   cmd_levidx)
-        n.register_command("picks",    cmd_picks)
-        n.register_command("validate", cmd_validate)
-        n.register_command("strategy", cmd_strategy)
-        n.register_command("movers",   cmd_movers)
-        n.register_command("invest",   cmd_invest)
-        n.register_command("apilimit", cmd_apiusage)
-        n.register_command("sell",     cmd_sell)
-        n.register_command("stop",     cmd_stop)
-        n.register_command("reload",   cmd_reload)
-        n.register_command("log",      cmd_log)
-        n.register_command("help",     cmd_help)
+        # 세 번째 인자 = 텔레그램 '/' 메뉴 설명(표시 순서 = 등록 순서).
+        # /sell·/stop은 메뉴에서 누르는 즉시 실행돼 위험하므로 메뉴에서 빼고 직접 입력으로만 받는다.
+        n.register_command("status",   cmd_status,   "오늘 손익·대기 현황")
+        n.register_command("pos",      cmd_pos,      "보유 포지션 상세")
+        n.register_command("lev",      cmd_lev,      "삼성 레버리지 현황 (/lev exit 강제청산)")
+        n.register_command("levidx",   cmd_levidx,   "지수 레버리지 현황 (/levidx exit 강제청산)")
+        n.register_command("picks",    cmd_picks,    "VM 지정종목·가격 현황")
+        n.register_command("strategy", cmd_strategy, "전략 토글·금액 조회/변경")
+        n.register_command("apilimit", cmd_apiusage, "오늘 API 호출량")
+        n.register_command("log",      cmd_log,      "최근 로그 15줄")
+        n.register_command("movers",   cmd_movers,   "등락률·거래량급증 상위 (/movers N)")
+        n.register_command("invest",   cmd_invest,   "개별주 계획매매 (/invest list)")
+        n.register_command("validate", cmd_validate, "vm_picks.json 품질 검증")
+        n.register_command("reload",   cmd_reload,   "vm_picks.json 강제 재로드")
+        n.register_command("ping",     cmd_ping,     "봇 응답 확인")
+        n.register_command("help",     cmd_help,     "명령어 안내")
+        n.register_command("sell",     cmd_sell)     # 메뉴 제외: 전량 강제 청산
+        n.register_command("stop",     cmd_stop)     # 메뉴 제외: 봇 종료
 
     def _get_status_message(self) -> str:
         kiwoom_str = "✅ 연결됨" if self._kiwoom_ready else "❌ 비활성 (Telegram 감시 모드)"

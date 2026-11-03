@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 _SEND_URL         = "https://api.telegram.org/bot{token}/sendMessage"
 _UPDATES_URL      = "https://api.telegram.org/bot{token}/getUpdates"
 _DEL_WEBHOOK_URL  = "https://api.telegram.org/bot{token}/deleteWebhook"
+_SET_COMMANDS_URL = "https://api.telegram.org/bot{token}/setMyCommands"
 
 
 class TelegramNotifier:
@@ -25,15 +26,23 @@ class TelegramNotifier:
         self._enabled     = bool(self.token and self.chat_id)
         self._offset      = 0
         self._commands    = {}       # name(str) -> callable(args: str) -> str|None
+        self._menu        = {}       # name -> 설명 ('/' 입력 시 뜨는 메뉴, 등록 순서 유지)
         self._stop_event  = threading.Event()
         self._poll_thread = None
 
     # ─────────────────────────────────────
     # 명령 등록
     # ─────────────────────────────────────
-    def register_command(self, name: str, handler):
-        """handler(args: str) -> str  (반환값이 응답 메시지)"""
-        self._commands[name.lstrip("/").lower()] = handler
+    def register_command(self, name: str, handler, menu: str = ""):
+        """handler(args: str) -> str  (반환값이 응답 메시지)
+        menu: 텔레그램 '/' 메뉴에 보일 설명. 비우면 메뉴에 안 뜨고 직접 입력으로만 실행된다
+        (/sell·/stop처럼 누르는 즉시 실행되면 위험한 명령용)."""
+        key = name.lstrip("/").lower()
+        self._commands[key] = handler
+        if menu:
+            self._menu[key] = menu[:256]
+        else:
+            self._menu.pop(key, None)
 
     # ─────────────────────────────────────
     # 알림 전송
@@ -72,6 +81,9 @@ class TelegramNotifier:
 
         # 웹훅이 걸려있으면 getUpdates가 동작하지 않으므로 먼저 제거
         self._delete_webhook()
+
+        # '/' 입력 시 뜨는 명령 메뉴 등록 (명령을 받는 인스턴스만 — 알림 전용 인스턴스는 덮어쓰지 않음)
+        self._set_menu()
 
         # 시작 시 대기 중인 기존 메시지를 모두 건너뜀 (봇 재시작 전 쌓인 명령 무시)
         self._skip_pending_updates()
@@ -118,6 +130,20 @@ class TelegramNotifier:
                 logger.info("[Telegram] 웹훅 제거 완료 (Long Polling 전환)")
         except Exception as e:
             logger.warning(f"[Telegram] 웹훅 제거 실패: {e}")
+
+    def _set_menu(self):
+        """setMyCommands — 실패해도 명령 수신에는 영향 없음."""
+        if not self._menu:
+            return
+        try:
+            cmds = [{"command": c, "description": d} for c, d in self._menu.items()]
+            r = requests.post(_SET_COMMANDS_URL.format(token=self.token), json={"commands": cmds}, timeout=10)
+            if r.json().get("ok"):
+                logger.info(f"[Telegram] 명령 메뉴 등록 완료 ({len(cmds)}개)")
+            else:
+                logger.warning(f"[Telegram] 명령 메뉴 등록 실패: {r.json().get('description')}")
+        except Exception as e:
+            logger.warning(f"[Telegram] 명령 메뉴 등록 오류: {type(e).__name__}")
 
     def _skip_pending_updates(self, max_age_secs: int = 120):
         """
