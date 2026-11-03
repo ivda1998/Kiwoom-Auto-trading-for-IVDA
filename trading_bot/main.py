@@ -2603,9 +2603,26 @@ class TradingBot:
             f"{pnl_emoji} 오늘 손익: {status['today_pnl']:+,.0f}원 ({status['pnl_rate']:+.2%}) | 거래: {status['trade_count']}회",
             f"대기: {len(waiting)}종목 | 보유: {total_pos_count}종목",
         ]
+
+        # 실시간 틱이 없으면(장 마감 후·재시작 직후) /pos처럼 REST 현재가로 보충 —
+        # 없으면 진입가로 계산돼 손익이 0%로 보였다 (2026-11-03 확인). 같은 종목은 한 번만 조회.
+        _rest_px = {}
+        def _px(code, fallback):
+            p = last_prices.get(code, 0)
+            if p:
+                return p
+            if code not in _rest_px:
+                _rest_px[code] = 0
+                if self._kiwoom_ready:
+                    try:
+                        _rest_px[code] = self.kiwoom.get_stock_info(code).get("current_price", 0)
+                    except Exception:
+                        pass
+            return _rest_px[code] or fallback
+
         # 일반 포지션
         for code, pos in positions.items():
-            cur = last_prices.get(code, pos.entry_price)
+            cur = _px(code, pos.entry_price)
             pnl = pos.pnl(cur)
             rate = pos.pnl_rate(cur)
             emoji = "▲" if pnl >= 0 else "▼"
@@ -2614,7 +2631,7 @@ class TradingBot:
         if vm_positions:
             lines.append(f"\n🤖 <b>VM 포지션 ({len(vm_positions)}개)</b>")
             for pid, vm_pos in vm_positions.items():
-                cur = last_prices.get(vm_pos.code, vm_pos.entry_price)
+                cur = _px(vm_pos.code, vm_pos.entry_price)
                 pnl = vm_pos.pnl(cur)
                 rate = vm_pos.pnl_rate(cur)
                 emoji = "▲" if pnl >= 0 else "▼"

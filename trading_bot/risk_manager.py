@@ -1,6 +1,8 @@
 # risk_manager.py - 리스크 관리 (포지션 사이징, 일별 손실 한도)
 
+import json
 import logging
+import os
 from datetime import datetime, date
 
 import config
@@ -24,6 +26,10 @@ class RiskManager:
         self._invested: float = 0.0          # 현재 투자 중인 금액
         self._trade_count: int = 0           # 오늘 거래 횟수
         self._is_halted: bool = False        # 매매 중단 상태
+        # 오늘 실현손익·거래횟수는 파일에도 남겨 재시작 후 복원 — 메모리에만 두면 장중 재시작 시
+        # 하루 손실 한도가 0부터 다시 시작하고 /status '오늘 손익'도 0으로 보인다 (2026-11-03 확인).
+        self._state_path = os.path.join(config.DATA_DIR, "risk_state.json")
+        self._load_state()
 
     # ─────────────────────────────────────────
     # 초기화 (장 시작 전)
@@ -49,6 +55,7 @@ class RiskManager:
             self._trade_count = 0
             self._is_halted = False
             self._today_date = date.today()
+            self._load_state()   # 같은 날 재시작이면 오늘 손익·거래횟수 복원
             logger.info(
                 f"[RiskManager] 초기 자본: {self._initial_capital:,.0f}원"
             )
@@ -57,16 +64,48 @@ class RiskManager:
             self._initial_capital = 10_000_000  # 기본값 1000만원
 
     def reset_daily(self):
-        """장 종료 후 일별 상태 리셋"""
+        """장 종료 시 오늘 결과 기록.
+        값은 0으로 지우지 않는다 — 장 마감 후 자정까지 /status에 오늘 손익이 보여야 하고,
+        다음 거래일엔 --auto 루프가 TradingBot(=RiskManager)을 새로 만들며 지난 날짜
+        risk_state.json은 무시되므로 자연히 0부터 시작한다."""
         logger.info(
             f"[RiskManager] 오늘 손익: {self._today_pnl:+,.0f}원 | "
             f"거래 횟수: {self._trade_count}회"
         )
-        self._today_pnl = 0.0
         self._invested = 0.0
-        self._trade_count = 0
-        self._is_halted = False
-        self._today_date = date.today()
+
+    # ─────────────────────────────────────────
+    # 오늘 손익 영속화 (재시작 복원)
+    # ─────────────────────────────────────────
+    def _load_state(self):
+        try:
+            if not os.path.exists(self._state_path):
+                return
+            with open(self._state_path, encoding="utf-8") as f:
+                d = json.load(f)
+            if d.get("date") != date.today().isoformat():
+                return   # 지난 날짜 기록은 무시
+            self._today_pnl = float(d.get("today_pnl", 0.0))
+            self._trade_count = int(d.get("trade_count", 0))
+            self._is_halted = bool(d.get("is_halted", False))
+            logger.info(
+                f"[RiskManager] 오늘 손익 복원: {self._today_pnl:+,.0f}원 | "
+                f"거래 {self._trade_count}회{' | 매매중단 상태' if self._is_halted else ''}"
+            )
+        except Exception as e:
+            logger.warning(f"[RiskManager] 오늘 손익 복원 실패: {e}")
+
+    def _save_state(self):
+        try:
+            os.makedirs(os.path.dirname(self._state_path), exist_ok=True)
+            tmp = self._state_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"date": date.today().isoformat(), "today_pnl": self._today_pnl,
+                           "trade_count": self._trade_count, "is_halted": self._is_halted,
+                           "updated": datetime.now().isoformat(timespec="seconds")}, f)
+            os.replace(tmp, self._state_path)
+        except Exception as e:
+            logger.warning(f"[RiskManager] 오늘 손익 저장 실패: {e}")
 
     # ─────────────────────────────────────────
     # 매수 가능 여부
@@ -88,6 +127,7 @@ class RiskManager:
                 f"({self._today_pnl:,.0f}원 / 한도 -{max_loss:,.0f}원)"
             )
             self._is_halted = True
+            self._save_state()
             return False
 
         return True
@@ -137,6 +177,7 @@ class RiskManager:
         """매수 체결 시 투자금액 증가"""
         self._invested += amount
         self._trade_count += 1
+        self._save_state()
 
     def on_sell(self, pnl: float):
         """매도 체결 시 손익 반영"""
@@ -151,6 +192,7 @@ class RiskManager:
                 f"오늘 손익: {self._today_pnl:,.0f}원"
             )
             self._is_halted = True
+        self._save_state()
 
     # ─────────────────────────────────────────
     # 손절가 계산
