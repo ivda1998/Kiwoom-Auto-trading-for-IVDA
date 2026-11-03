@@ -79,6 +79,13 @@ class TelegramNotifier:
             logger.info("[Telegram] TELEGRAM_POLLING=false — 명령 수신 생략(알림 전송만)")
             return
 
+        # 이전 폴링 스레드가 남아 있으면 끝날 때까지 기다린다 — 두 스레드가 동시에
+        # getUpdates를 부르면 "Conflict: terminated by other getUpdates request" 발생
+        old = self._poll_thread
+        if old is not None and old.is_alive():
+            self._stop_event.set()
+            old.join(timeout=20)
+
         # 웹훅이 걸려있으면 getUpdates가 동작하지 않으므로 먼저 제거
         self._delete_webhook()
 

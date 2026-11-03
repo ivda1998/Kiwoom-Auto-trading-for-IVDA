@@ -2762,7 +2762,7 @@ class TradingBot:
         except Exception as e:
             logger.debug(f"[Bot] heartbeat 파일 쓰기 실패: {e}")
 
-    def _telegram_idle_wait(self, until: datetime):
+    def _telegram_idle_wait(self, until: datetime, label: str = "비거래일"):
         """비거래일(주말/공휴일) 대기 — 텔레그램 명령 응답만 유지하고 매매 로직은 돌리지 않음.
 
         기존에는 비거래일 전체를 순수 time.sleep()으로 보내 Notifier를 아예 생성하지
@@ -2771,7 +2771,7 @@ class TradingBot:
         완전 무응답 상태였음).
         """
         self.notifier.start_polling()
-        logger.info(f"[Bot] 비거래일 텔레그램 대기 모드 (다음 거래일 확인: {until.strftime('%Y-%m-%d %H:%M')})")
+        logger.info(f"[Bot] {label} 텔레그램 대기 모드 (다음 확인: {until.strftime('%Y-%m-%d %H:%M')})")
         while datetime.now() < until:
             self._stop_event.wait(timeout=60)
             self.notifier.ensure_polling()
@@ -3003,19 +3003,18 @@ if __name__ == "__main__":
             bot = TradingBot(auto_mode=True)
             bot.start()
 
-            # 텔레그램 폴링 스레드 명시적 종료 — 다음 날 TradingBot()이 새 폴링을
-            # 시작하기 전에 멈추지 않으면 두 스레드가 같은 봇 토큰으로 getUpdates를
-            # 호출해 "Conflict: terminated by other getUpdates request"가 발생하고
-            # 텔레그램 명령 수신이 전부 불안정해진다.
-            bot.notifier.stop()
-
-            print("\n[Bot] 오늘 장이 종료되었습니다. 다음 거래일을 위해 자정까지 대기합니다...")
-            while True:
-                now_hm = datetime.now().strftime("%H:%M")
-                if "15:30" <= now_hm <= "23:59":
-                    time.sleep(600)
-                else:
-                    break
+            if datetime.now().strftime("%H:%M") >= "15:30":
+                # 장 마감 후 자정까지도 텔레그램 명령(/pos·/status 등)에 응답.
+                # 예전엔 여기서 폴링을 끄고 잠만 자서 15:30~24:00 동안 명령이 전부 무응답이었다
+                # (실측 2026-11-03 15:39 재시작 직후 메뉴 명령 무응답).
+                # _telegram_idle_wait가 끝날 때 notifier.stop()을 하므로, 다음 날 TradingBot()의
+                # 새 폴링과 getUpdates가 겹치는 Conflict 문제는 그대로 막힌다.
+                print("\n[Bot] 오늘 장이 종료되었습니다. 자정까지 텔레그램 명령만 받으며 대기합니다...")
+                midnight = datetime.combine(datetime.now().date() + timedelta(days=1), datetime.min.time())
+                bot._telegram_idle_wait(midnight, label="장 마감 후")
+            else:
+                # 장중에 start()가 끝난 비정상 경우 — 예전처럼 폴링을 끄고 곧바로 재가동
+                bot.notifier.stop()
 
             print("[Bot] 새 날이 밝았습니다. 봇을 재가동합니다.\n")
             time.sleep(5)
