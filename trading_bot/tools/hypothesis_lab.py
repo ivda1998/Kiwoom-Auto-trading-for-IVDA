@@ -692,6 +692,144 @@ def filt_dow(ctx, skip=0):
 
 
 # ─────────────────────────────────────────
+# 2026-11-07 주간 패밀리 #3: 레버/인버스 괴리·일중 소진·내부봉·연속일·거래 횟수·시간대 보정 거래량
+# ─────────────────────────────────────────
+
+def filt_pair_resid(ctx, th=0.004):
+    """레버(2x)-인버스(-1x) 쌍 괴리: 잔차 R = 레버 당일수익/2 + 인버스 당일수익(둘 다 전일 종가 대비).
+    이상적이면 0 → R>0은 레버 프리미엄(또는 인버스 할인). R>th면 롱 금지, R<-th면 숏 금지(비싼 쪽을 사지 않음).
+    가격 파생이 아닌 '두 ETF 사이 괴리'라는 새 정보원."""
+    sl = ctx.short_lookup
+    inv_prev, last, cur = {}, None, None
+    for b in ctx.bars:
+        v = sl.get(b['dt'])
+        if b['d'] != cur:
+            inv_prev[b['d']] = last
+            cur = b['d']
+        if v:
+            last = v['close']
+    def keep(i, trend, s):
+        b = ctx.bars[i]
+        v = sl.get(b['dt'])
+        pc, ip = ctx.prev_close.get(b['d']), inv_prev.get(b['d'])
+        if not (v and pc and ip):
+            return True
+        r = (ctx.closes[i] / pc - 1) / 2 + (v['close'] / ip - 1)
+        return not ((s == 'L' and r > th) or (s == 'S' and r < -th))
+    return keep
+
+
+def filt_range_used(ctx, k=1.0, n=10, mode='exhaust'):
+    """일중 변동폭 소진/확장: (당일 장중 고저폭/전일종가) ÷ 직전 n일 일봉 평균 고저폭(%).
+    exhaust = 비율 ≥ k면 신규진입 금지(이미 하루치 움직임을 다 썼으니 추가 추세 여력 적음),
+    expand  = 비율 ≥ k일 때만 진입(이미 확장된 날만)."""
+    prior = _prior_ohlc(ctx, n)
+    def avg_rng(d):
+        w = prior(d)
+        if not w:
+            return None
+        return sum((h - l) / c for (_, h, l, c) in w if c) / len(w)
+    ar = _cached(avg_rng)
+    def keep(i, trend, s):
+        d = ctx.bars[i]['d']
+        pc, a = ctx.prev_close.get(d), ar(d)
+        if not pc or not a:
+            return True
+        ratio = (ctx.run_hi[i] - ctx.run_lo[i]) / pc / a
+        return ratio < k if mode == 'exhaust' else ratio >= k
+    return keep
+
+
+def filt_max_trades(ctx, n=1):
+    """일중 거래 횟수 상한: 하루 신호 n회까지만(signal_fn은 평탄 상태에서만 호출되므로 재호출=직전 청산 후).
+    휩쏘 날 재진입 누적 손실 차단 — 일 단위 휴식(meta)이 아닌 '당일 재진입 제한'."""
+    cnt = {}
+    def keep(i, trend, s):
+        d = ctx.bars[i]['d']
+        if cnt.get(d, 0) >= n:
+            return False
+        cnt[d] = cnt.get(d, 0) + 1
+        return True
+    return keep
+
+
+def filt_vol_slot(ctx, k=1.5, n=10):
+    """시간대 보정 거래량 급증: 신호봉+직전봉 거래량이 같은 시각 슬롯의 직전 n거래일 평균의 k배 이상일 때만.
+    (장 초반·마감 거래량 편중을 제거한 상대 급증 — 기존 단순 거래량필터와 다름)"""
+    import bisect
+    slot = {}
+    for b in ctx.bars:
+        slot.setdefault(b['t'], []).append((b['d'], b['volume']))
+    keys = {t: [x[0] for x in v] for t, v in slot.items()}
+    def base(t, d):
+        v, ks = slot.get(t), keys.get(t)
+        if not v:
+            return None
+        k1 = bisect.bisect_left(ks, d)
+        w = [x[1] for x in v[max(0, k1 - n):k1]]
+        return sum(w) / len(w) if len(w) >= n // 2 else None
+    def keep(i, trend, s):
+        if i < 1 or ctx.bars[i - 1]['d'] != ctx.bars[i]['d']:
+            return True
+        d = ctx.bars[i]['d']
+        b0, b1 = base(ctx.bars[i]['t'], d), base(ctx.bars[i - 1]['t'], d)
+        if not b0 or not b1:
+            return True
+        cur = ctx.bars[i]['volume'] + ctx.bars[i - 1]['volume']
+        return cur >= k * (b0 + b1)
+    return keep
+
+
+def entry_inside_break(ctx, use_gate=True):
+    """내부봉(inside day) 모봉 돌파: 전일 고저가 전전일 고저 안에 완전히 들어간 날(변동 수축),
+    당일 전일 고/저를 장중 돌파하면 1일 1회 진입. NR(n)이 폭 기준이면 이쪽은 포함관계 기준(모봉 구조)."""
+    prior = _prior_ohlc(ctx, 2)
+    used = set()
+    def fn(i, trend):
+        d = ctx.bars[i]['d']
+        if d in used:
+            return None
+        w = prior(d)
+        if not w:
+            return None
+        (_, h0, l0, _), (_, h1, l1, _) = w
+        if not (h1 <= h0 and l1 >= l0):
+            return None
+        sig = 'L' if ctx.closes[i] > h1 else ('S' if ctx.closes[i] < l1 else None)
+        if sig and use_gate and not ((sig == 'L' and trend == 'UP') or (sig == 'S' and trend == 'DOWN')):
+            return None
+        if sig:
+            used.add(d)
+        return sig
+    return fn
+
+
+def entry_day_streak(ctx, n=3, mode='fade'):
+    """연속 일봉 방향 n일(종가 기준 연속 상승/하락) 다음날 첫 판정봉(09:30)에서 1회 → EOD 청산.
+    fade = 연속 하락 후 롱/연속 상승 후 숏(단기 반전), follow = 같은 방향(추세 연장). 게이트 무관."""
+    used = set()
+    def fn(i, trend):
+        b = ctx.bars[i]; d = b['d']
+        if d in used or b['t'] < '0930':
+            return None
+        used.add(d)
+        c = ctx.prior_closes(d)
+        if len(c) < n + 1:
+            return None
+        diffs = [c[-k] - c[-k - 1] for k in range(1, n + 1)]
+        if all(x > 0 for x in diffs):
+            up = True
+        elif all(x < 0 for x in diffs):
+            up = False
+        else:
+            return None
+        if mode == 'fade':
+            up = not up
+        return 'L' if up else 'S'
+    return fn
+
+
+# ─────────────────────────────────────────
 # 빌더: spec → (trend_lookup, signal_fn, sim_kwargs)
 # ─────────────────────────────────────────
 
@@ -701,10 +839,13 @@ FILTERS = {'stretch': filt_stretch, 'vwap': filt_vwap, 'dayret': filt_dayret,
            'window': filt_window, 'rangepos': filt_rangepos,
            'expiry': filt_expiry, 'tom': filt_tom, 'prior_clv': filt_prior_clv, 'flow': filt_flow,
            'peer_intraday': filt_peer_intraday, 'squeeze': filt_squeeze,
-           'peer_rs': filt_peer_rs, 'dow': filt_dow}
+           'peer_rs': filt_peer_rs, 'dow': filt_dow,
+           'pair_resid': filt_pair_resid, 'range_used': filt_range_used,
+           'max_trades': filt_max_trades, 'vol_slot': filt_vol_slot}
 ENTRIES = {'orb': entry_orb, 'pdhl': entry_pdhl, 'tsmom': entry_tsmom, 'bounce': entry_bounce,
            'gap': entry_gap, 'state_short': entry_state_short,
-           'nr_break': entry_nr_break, 'bigday': entry_bigday, 'orb_fail': entry_orb_fail}
+           'nr_break': entry_nr_break, 'bigday': entry_bigday, 'orb_fail': entry_orb_fail,
+           'inside_break': entry_inside_break, 'day_streak': entry_day_streak}
 
 
 def build(spec: dict, ctx: Ctx):
@@ -855,6 +996,33 @@ def catalog() -> list:
         H.append(_h(f'cal_dow_skip_{dow}', 'calendar', f'{nm}요일 신규진입 금지',
                     '요일별 갭·주말 위험회피로 추세 지속성이 다를 수 있음(요일 효과, 미시험)',
                     {'filters': [['dow', {'skip': dow}]]}))
+    # ── F. 2026-11-07 주간 패밀리 #3: 쌍 괴리·일중 소진·내부봉·연속일·거래횟수·시간대 보정 거래량
+    for th in (0.004, 0.008):
+        H.append(_h(f'pair_resid_{int(th*1000)}', 'cross_market', f'레버/인버스 쌍 괴리(잔차 ±{th:.1%}) 비싼 쪽 매수 금지',
+                    '레버(2x)+인버스(-1x) 당일수익 합은 이상적으로 0 — 괴리는 한쪽 ETF의 프리미엄/할인, 비싼 쪽 추격 배제',
+                    {'filters': [['pair_resid', {'th': th}]]}))
+    for k, mode in [(0.8, 'exhaust'), (1.2, 'exhaust'), (0.5, 'expand')]:
+        H.append(_h(f'range_{mode}_{int(k*10)}', 'filter',
+                    f'일중 변동폭 {"소진(≥" if mode == "exhaust" else "확장(≥"}{k:.1f}배 평균) {"진입금지" if mode == "exhaust" else "일만 진입"}',
+                    '당일 움직임이 최근 평균 일간 변동폭 대비 얼마나 소진/확장됐는지 — 일봉 고저 평균 대비 일중 상대 위치(기존 고저범위 위치와 다름)',
+                    {'filters': [['range_used', {'k': k, 'mode': mode}]]}))
+    H.append(_h('daily_inside_break', 'daily_pattern', '내부봉(inside day) 다음날 전일 고저 돌파 +게이트',
+                '전일 고저가 전전일 고저 안에 포함된 수축일 뒤 확장 — 모봉 포함관계 기준(NR 폭 기준과 다름), 추가 진입 후보',
+                {'entry': ['inside_break'], 'sim': {'entry_start': '09:15'}}, role='additive'))
+    for mode in ('fade', 'follow'):
+        H.append(_h(f'daily_streak3_{mode}', 'daily_pattern',
+                    f'일봉 3일 연속 방향 후 {"반전(역발상)" if mode == "fade" else "연장(추종)"} 1회 EOD',
+                    '연속 상승/하락일 수라는 미시험 일봉 정보 — 단기 반전 vs 추세 연장 중 어느 쪽이 맞는지 직접 비교',
+                    {'entry': ['day_streak', {'n': 3, 'mode': mode}],
+                     'sim': {'entry_start': '09:30', 'trail_gap': None}}, role='additive'))
+    for n in (1, 2):
+        H.append(_h(f'meta_max_trades_{n}', 'meta', f'일중 거래 {n}회 상한',
+                    '휩쏘 날 재진입 누적 손실 차단(일 단위 휴식과 다른 당일 재진입 제한), 추세 날 수익은 첫 거래에 집중되는지 검증',
+                    {'filters': [['max_trades', {'n': n}]]}))
+    for k in (1.5, 2.0):
+        H.append(_h(f'filt_volslot_{int(k*10)}', 'filter', f'시간대 보정 거래량 {k:.1f}배 급증 동반 돌파만',
+                    '같은 시각 직전 10일 평균 대비 거래량 급증 = 기관성 수급 유입 돌파(장 초반 편중 제거한 상대 거래량)',
+                    {'filters': [['vol_slot', {'k': k}]]}))
     return H
 
 
