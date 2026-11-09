@@ -594,6 +594,8 @@ class LeverageInverseAgent(BaseAgent):
         if not self._position or self._position["code"] != code:
             return
         pos = self._position
+        if pos.get("carry_date"):
+            return   # 이월 포지션은 손절·트레일 없이 다음 거래일 아침 매도만 (백테스트와 동일)
         if price <= pos["stop_loss"]:
             self._exit("손절", price, context)
             return
@@ -620,12 +622,79 @@ class LeverageInverseAgent(BaseAgent):
     # ─────────────────────────────────────────
 
     def _check_force_exit(self, context):
-        if not self._position or self._force_exited_today:
+        if not self._position:
+            return
+        if self._position.get("carry_date"):
+            self._check_carry_exit(context)   # 이월 포지션: 15:20 청산 대신 다음 거래일 아침 매도
+            return
+        if self._force_exited_today:
             return
         force_time = getattr(config, "LEVERAGE_FORCE_EXIT", self.FORCE_EXIT_TIME)
         if datetime.now().strftime("%H:%M") >= force_time:
-            self._exit("EOD강제청산", 0, context)
+            if self._carry_allowed():
+                self._start_carry(context)
+            else:
+                self._exit("EOD강제청산", 0, context)
             self._force_exited_today = True
+
+    # ─────────────────────────────────────────
+    # 롱 이월 (2026-11-09, 모의계좌 시험) — config.LEVERAGE_CARRY_*
+    # ─────────────────────────────────────────
+
+    def _carry_allowed(self, now: Optional[datetime] = None) -> bool:
+        pos = self._position
+        if not pos or not getattr(config, "LEVERAGE_CARRY_ENABLED", False):
+            return False
+        if not (config.IS_SIMULATION or getattr(config, "LEVERAGE_CARRY_ALLOW_REAL", False)):
+            return False
+        if pos.get("direction") != "LEVERAGE":
+            return False   # 숏(인버스) 이월은 백테스트에서 손해 → 항상 15:20 청산
+        now = now or datetime.now()
+        if now.weekday() == 4 and not getattr(config, "LEVERAGE_CARRY_FRIDAY", False):
+            return False
+        cap = int(getattr(config, "LEVERAGE_CARRY_MAX_AMOUNT", 0) or 0)
+        price = self._last_etf_price.get(pos["code"], 0) or pos.get("entry_price", 0)
+        if cap > 0 and price * pos.get("qty", 0) > cap:
+            logger.info(f"[LeverageAgent] 이월 생략: 평가금액 {price * pos['qty']:,.0f}원 > 상한 {cap:,}원")
+            return False
+        return True
+
+    def _start_carry(self, context):
+        pos = self._position
+        price = self._last_etf_price.get(pos["code"], 0)
+        pos["carry_date"] = datetime.now().strftime("%Y%m%d")
+        pos["carry_px"] = price            # 15:20 가격(이월 효과 사후 비교용)
+        save_position(self._pos_state_path, pos)
+        entry = pos.get("entry_price") or 0
+        cur = (price - entry) / entry if entry and price else 0.0
+        logger.info(f"[LeverageAgent] 🌙 롱 이월: {pos['name']}({pos['code']}) {pos['qty']}주 "
+                    f"15:20 {price:,}원 (진입 대비 {cur:+.2%}) → 다음 거래일 장 시작 후 매도")
+        notifier = context["harness"].get_context().get("notifier") if context.get("harness") else None
+        if notifier:
+            notifier.send(
+                f"🌙 <b>삼성 레버리지 롱 이월</b> [{pos['name']}({pos['code']})]\n"
+                f"{pos['qty']}주 | 15:20 {price:,}원 (진입 대비 {cur:+.2%})\n"
+                f"다음 거래일 {getattr(config, 'LEVERAGE_CARRY_EXIT_TIME', '09:00')} 이후 시장가 매도 (모의 시험)"
+            )
+
+    def _check_carry_exit(self, context):
+        pos = self._position
+        now = datetime.now()
+        if now.strftime("%Y%m%d") <= str(pos["carry_date"]):
+            return    # 이월 당일 밤: 손절·청산 없이 보유
+        if now.strftime("%H:%M") < getattr(config, "LEVERAGE_CARRY_EXIT_TIME", "09:00"):
+            return
+        last_try = getattr(self, "_carry_exit_tried_at", None)
+        if last_try and (now - last_try).total_seconds() < 30:
+            return    # 주문 실패 시 30초 간격으로 재시도
+        self._carry_exit_tried_at = now
+        ref = self._last_etf_price.get(pos["code"], 0)
+        if not ref:
+            try:
+                ref = context["harness"].kiwoom.get_stock_info(pos["code"]).get("current_price", 0)
+            except Exception as e:
+                logger.warning(f"[LeverageAgent] 이월 청산 현재가 조회 실패: {e}")
+        self._exit("이월청산(시가)", ref or pos.get("carry_px") or pos.get("entry_price", 0), context)
 
     # ─────────────────────────────────────────
     # 일일 초기화
@@ -668,6 +737,8 @@ class LeverageInverseAgent(BaseAgent):
             pos = dict(persisted)
             pos["qty"] = qty
             src = "영속복원(SL/TP/peak 승계)"
+            if pos.get("carry_date"):
+                src = f"전일({pos['carry_date']}) 롱 이월분 → 장 시작 후 매도"
         else:
             direction = "LEVERAGE" if code == self.LEVERAGE_CODE else "INVERSE"
             sl_rate = getattr(config, "LEVERAGE_SL_RATE", self.SL_RATE)

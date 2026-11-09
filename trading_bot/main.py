@@ -315,6 +315,9 @@ class TradingBot:
             getattr(self, "_synced_positions", None) or self.kiwoom.get_positions(),
             harness=self.harness,
         )
+        # 전일 롱 이월분은 초기 스캔(수 분 걸릴 수 있음)을 기다리지 않고 바로 매도
+        if (getattr(self.leverage_agent, "_position", None) or {}).get("carry_date"):
+            self.leverage_agent._check_force_exit(self.harness.get_context())
         logger.info(
             f"[Bot] 레버리지 전략 초기화: 삼성({samsung}, {lev_interval}분봉) "
             f"레버리지({lev}) 인버스({inv})"
@@ -2032,7 +2035,11 @@ class TradingBot:
             )
 
             # ── 포지션 현황 ────────────────────────────────────────────
-            if exited:
+            if lev_pos and lev_pos.get("carry_date"):
+                lines.append(f"\n🌙 롱 이월 중 ({lev_pos['carry_date']} 15:20 결정) — "
+                             f"{lev_pos['name']} {lev_pos['qty']}주, 다음 거래일 "
+                             f"{getattr(config, 'LEVERAGE_CARRY_EXIT_TIME', '09:00')} 이후 매도")
+            elif exited:
                 lines.append("\n🔴 오늘 강제청산 완료 (재진입 없음)")
             elif not lev_pos:
                 lines.append("\n🟡 포지션 없음 — 신호 대기 중")

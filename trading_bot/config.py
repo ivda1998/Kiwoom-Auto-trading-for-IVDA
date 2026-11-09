@@ -380,6 +380,15 @@ LEVERAGE_ENTRY_START  = _os.environ.get("LEVERAGE_ENTRY_START", "10:00")     # �
 LEVERAGE_ENTRY_END    = "15:00"
 LEVERAGE_FORCE_EXIT   = "15:20"
 
+# 롱 이월(오버나잇) 시험 (2026-11-09) — 15:20에 레버리지(롱) 보유 중이면 청산하지 않고
+# 다음 거래일 장 시작 직후 시장가로 판다. 숏(인버스)은 이월 안 함(백테스트에서 손해).
+# 백테스트: 실제 0193W0 기준 벤치 대비 paired t 금 제외 +1.64 / 금 포함 +2.55 → 모의계좌에서만 시험.
+LEVERAGE_CARRY_ENABLED    = _os.environ.get("LEVERAGE_CARRY_ENABLED", "false").lower() == "true"
+LEVERAGE_CARRY_FRIDAY     = _os.environ.get("LEVERAGE_CARRY_FRIDAY", "false").lower() == "true"   # 금요일(주말 보유)도 이월
+LEVERAGE_CARRY_MAX_AMOUNT = int(_os.environ.get("LEVERAGE_CARRY_MAX_AMOUNT", "0"))   # 평가금액이 이보다 크면 이월 안 함(0=상한 없음)
+LEVERAGE_CARRY_ALLOW_REAL = _os.environ.get("LEVERAGE_CARRY_ALLOW_REAL", "false").lower() == "true"  # 실계좌 이월 허용(기본 금지)
+LEVERAGE_CARRY_EXIT_TIME  = _os.environ.get("LEVERAGE_CARRY_EXIT_TIME", "09:00")     # 다음 거래일 이 시각 이후 첫 확인에서 매도
+
 # 신호 전략 선택: "BOLLINGER" (일봉추세+BB돌파, 기본) | "TREND_MACD" | "MACD_HA"/"BASIC" (레거시)
 LEVERAGE_STRATEGY     = _os.environ.get("LEVERAGE_STRATEGY", "BOLLINGER").upper()
 LEVERAGE_MACD_FAST    = int(_os.environ.get("LEVERAGE_MACD_FAST",   "5"))
