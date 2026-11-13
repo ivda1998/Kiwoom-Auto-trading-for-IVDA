@@ -59,6 +59,15 @@ EXCLUDE_SPAC_ETN_ETF = _os.environ.get("EXCLUDE_SPAC_ETN_ETF", "false").lower() 
 # 포지션 보유 종목(SL/TP 감시)은 ACTIVE 주기, 단순 진입 대기 후보는 IDLE 주기로 폴링.
 REST_POLL_INTERVAL      = int(_os.environ.get("REST_POLL_INTERVAL",      "180"))
 REST_POLL_INTERVAL_IDLE = int(_os.environ.get("REST_POLL_INTERVAL_IDLE", "420"))
+# 신호 분봉(삼성전자·122630) 조회 타이밍 — 기본값은 기존 동작 그대로.
+#   DUE_MARGIN : 봉 마감 뒤 몇 초에 공식 분봉을 조회할지(기본 10초)
+#   REFRESH_GAP: 조회 최소 간격 = 봉이 아직 안 나왔을 때 재시도 간격(기본 30초)
+#   MAIN_LOOP_WAIT: 메인 루프 대기(0 = 기존 규칙: 모의·지수전용 5초, 그 외 60초)
+# 나무는 일일 호출 한도가 없어 줄일 수 있다 — 줄이기 전에 CANDLE_PROBE로 확정 시점을 잰다.
+CANDLE_DUE_MARGIN_SEC  = float(_os.environ.get("CANDLE_DUE_MARGIN_SEC", "10"))
+CANDLE_REFRESH_GAP_SEC = float(_os.environ.get("CANDLE_REFRESH_GAP_SEC", "30"))
+MAIN_LOOP_WAIT_SEC     = float(_os.environ.get("MAIN_LOOP_WAIT_SEC", "0"))
+CANDLE_PROBE           = _os.environ.get("CANDLE_PROBE", "false").lower() == "true"  # 분봉 확정 시점 측정(기록 전용)
 # API 절약 단계(일일 1700 한도 전에 덜 중요한 호출부터 끊어 손절 감시 예산 확보)
 API_SOFT_LIMIT     = int(_os.environ.get("API_SOFT_LIMIT", "1500"))      # 이상: 미보유 종목 폴링 중단
 API_CRITICAL_LIMIT = int(_os.environ.get("API_CRITICAL_LIMIT", "1650"))  # 이상: 신호 분봉 갱신도 중단
@@ -142,6 +151,13 @@ VM_PICKS_PATH = _os.environ.get(
     os.path.join(os.path.dirname(__file__), "data", "vm_picks.json")
 )
 VM_MODE = _os.environ.get("VM_MODE", "false").lower() == "true"
+# 추천 종목 출처: file = VM_PICKS_PATH 파일을 그대로 읽음(기본), insight = Ddo invest의 서브 스크리닝
+# (messages.db insight_screening)을 skills/picks_source가 VM_PICKS_PATH로 옮겨 씀 — 그 경우 VM_PICKS_PATH는
+# 반드시 이 인스턴스 데이터 폴더 안의 파일이어야 한다(다른 프로젝트 파일 덮어쓰기 방지).
+VM_PICKS_SOURCE     = _os.environ.get("VM_PICKS_SOURCE", "file").lower()
+VM_PICKS_INSIGHT_DB = _os.environ.get("VM_PICKS_INSIGHT_DB", "/home/ubuntu/invest/data/messages.db")
+# 텔레그램 /nh: 키움 봇이 나무 인스턴스 폴더를 읽기만 해서 현황 표시(나무 봇은 명령 수신 꺼짐)
+NH_INSTANCE_DIR     = _os.environ.get("NH_INSTANCE_DIR", "/home/ubuntu/autoTrade/nh_instance")
 
 # ─────────────────────────────────────────
 # 전략 활성화 토글 (런타임에서 텔레그램 /strategy 명령으로 변경 가능)

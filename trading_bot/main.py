@@ -271,9 +271,11 @@ class TradingBot:
         if not self._index_only:
             self._init_leverage_strategy()
         self._init_leverage_index_strategy()
+        self._start_candle_probe()
 
         if not self._index_only:
-            # 후보 종목 초기 스캔 (일봉 기준)
+            # 후보 종목 초기 스캔 (일봉 기준) — 스캔 전에 추천 파일을 최신으로
+            self._sync_picks_source()
             self._run_initial_scan()
 
             # 장 중 실시간 조건식 모니터링 시작 (ka10173)
@@ -322,6 +324,27 @@ class TradingBot:
             f"[Bot] 레버리지 전략 초기화: 삼성({samsung}, {lev_interval}분봉) "
             f"레버리지({lev}) 인버스({inv})"
         )
+
+    def _start_candle_probe(self):
+        """분봉 확정 시점 측정(기록 전용, config.CANDLE_PROBE). 실패해도 매매에 영향 없음."""
+        if not getattr(config, "CANDLE_PROBE", False):
+            return
+        try:
+            from skills.candle_probe import CandleProbe
+            codes = []
+            if not self._index_only:
+                codes.append(config.LEVERAGE_SAMSUNG_CODE)
+            if getattr(config, "LEVERAGE_INDEX_ENABLED", False):
+                codes.append(self.leverage_index_agent.SIGNAL_CODE)
+            if not codes:
+                return
+            import os as _os
+            self._candle_probe = CandleProbe(
+                self.kiwoom, codes, getattr(config, "LEVERAGE_CANDLE_INTERVAL", 3),
+                _os.path.join(config.DATA_DIR, "candle_probe.csv"))
+            self._candle_probe.start()
+        except Exception as e:
+            logger.warning(f"[Bot] 분봉 측정 시작 실패(무시): {e}")
 
     # ─────────────────────────────────────────
     # 지수 레버리지 전략 초기화 (LeverageIndexAgent) — 삼성과 병행, 기본 비활성
@@ -847,9 +870,21 @@ class TradingBot:
         
         print("═" * 62 + "\n")
 
+    def _sync_picks_source(self):
+        """추천 출처가 서브 스크리닝(VM_PICKS_SOURCE=insight)이면 최신 결과를 VM_PICKS_PATH 파일로 옮긴다.
+        기본(file)이면 아무것도 하지 않는다. 실패해도 기존 파일로 계속 동작."""
+        if getattr(config, "VM_PICKS_SOURCE", "file") != "insight":
+            return
+        try:
+            from skills.picks_source import sync_insight_picks
+            sync_insight_picks(config.VM_PICKS_INSIGHT_DB, config.VM_PICKS_PATH, config.DATA_DIR)
+        except Exception as e:
+            logger.warning(f"[Bot] 추천 출처 동기화 오류(무시): {e}")
+
     def _reload_vm_picks_if_changed(self):
         import os
         import json as _json
+        self._sync_picks_source()
         path = config.VM_PICKS_PATH
         if not os.path.exists(path):
             return
@@ -1091,7 +1126,7 @@ class TradingBot:
                 if (self._in_trade_hours() and hasattr(self, "leverage_agent") and not self._index_only
                         and self._api_tier() < 2):
                     last_refresh = self._last_sim_poll.get("005930", 0.0)
-                    if now_ts - last_refresh >= 30:  # 최소 30초 간격
+                    if now_ts - last_refresh >= getattr(config, "CANDLE_REFRESH_GAP_SEC", 30):  # 최소 간격(기본 30초)
                         market_data = self.harness.skills.get("market_data")
                         if market_data:
                             lev_min = getattr(config, "LEVERAGE_CANDLE_INTERVAL", 10)
@@ -1100,7 +1135,7 @@ class TradingBot:
                             due = (
                                 not candles or
                                 (datetime.now() - candles[-1].datetime).total_seconds()
-                                >= lev_min * 120 + 10
+                                >= lev_min * 120 + getattr(config, "CANDLE_DUE_MARGIN_SEC", 10)
                             )
                             if due:
                                 n = market_data.refresh_candles("005930", count=5)
@@ -1122,7 +1157,7 @@ class TradingBot:
                     sig_code = self.leverage_index_agent.SIGNAL_CODE
                     key = f"{sig_code}_candle"
                     last_refresh = self._last_sim_poll.get(key, 0.0)
-                    if now_ts - last_refresh >= 30:
+                    if now_ts - last_refresh >= getattr(config, "CANDLE_REFRESH_GAP_SEC", 30):
                         market_data = self.harness.skills.get("market_data")
                         if market_data:
                             lev_min = getattr(config, "LEVERAGE_INDEX_CANDLE_INTERVAL", 3)
@@ -1130,7 +1165,7 @@ class TradingBot:
                             due = (
                                 not candles or
                                 (datetime.now() - candles[-1].datetime).total_seconds()
-                                >= lev_min * 120 + 10
+                                >= lev_min * 120 + getattr(config, "CANDLE_DUE_MARGIN_SEC", 10)
                             )
                             if due:
                                 n = market_data.refresh_candles(sig_code, count=5)
@@ -1208,7 +1243,8 @@ class TradingBot:
 
                 # 실계좌 60초 주기는 3분봉 신호 주입(due 체크)을 최대 60초 늦춘다 — 지수 전용은
                 # 5초로. 분봉 refresh·백업틱은 각자 시간 게이트가 있어 호출수는 늘지 않는다.
-                wait_time = 5 if (config.IS_SIMULATION or self._index_only) else 60
+                wait_time = (getattr(config, "MAIN_LOOP_WAIT_SEC", 0)
+                             or (5 if (config.IS_SIMULATION or self._index_only) else 60))
                 self._stop_event.wait(timeout=wait_time)
 
         except KeyboardInterrupt:
@@ -2549,6 +2585,7 @@ class TradingBot:
                 "/sell — 전량 강제 청산 (메뉴에 없음, 직접 입력)\n"
                 "/reload — vm_picks.json 강제 재로드\n"
                 "/log — 최근 로그 15줄\n"
+                "/nh — 나무 봇 현황·포지션 (/nh log 나무 로그 15줄)\n"
                 "/stop — 봇 종료 (메뉴에 없음, 직접 입력)\n"
                 "/help — 이 도움말"
             )
@@ -2567,6 +2604,23 @@ class TradingBot:
         n.register_command("invest",   cmd_invest,   "개별주 계획매매 (/invest list)")
         n.register_command("validate", cmd_validate, "vm_picks.json 품질 검증")
         n.register_command("reload",   cmd_reload,   "vm_picks.json 강제 재로드")
+        def cmd_nh(args):
+            """나무 봇 현황 — 나무 인스턴스 파일 읽기 전용, 현재가는 키움 실시간가 → REST 순."""
+            from skills.nh_status import build_nh_status, build_nh_log
+            inst = getattr(config, "NH_INSTANCE_DIR", "/home/ubuntu/autoTrade/nh_instance")
+            if args.strip().lower().startswith("log"):
+                return build_nh_log(inst)
+            last_prices = self.harness.get_context().get("last_prices", {})
+
+            def _price(code):
+                p = last_prices.get(code, 0)
+                if not p and self._kiwoom_ready:
+                    p = self.kiwoom.get_stock_info(code).get("current_price", 0)
+                return abs(int(p or 0))
+            return build_nh_status(inst, price_fn=_price)
+
+        if getattr(config, "BROKER", "kiwoom") != "nh":
+            n.register_command("nh",   cmd_nh,       "나무 봇 현황·포지션 (/nh log)")
         n.register_command("ping",     cmd_ping,     "봇 응답 확인")
         n.register_command("help",     cmd_help,     "명령어 안내")
         n.register_command("sell",     cmd_sell)     # 메뉴 제외: 전량 강제 청산
@@ -2848,6 +2902,7 @@ class TradingBot:
         """
         import os as _os_lw
         import json as _json_lw
+        self._sync_picks_source()
         path = config.VM_PICKS_PATH
         if not _os_lw.path.exists(path):
             return
