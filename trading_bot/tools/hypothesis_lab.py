@@ -11,9 +11,24 @@
 
 판정은 run_hypothesis_explorer.evaluate()가 기존 선정기 기준(paired-t·홀드아웃·국면·코스닥
 전이)을 그대로 쓴다. 이 모듈은 '가설 정의'만 담당한다."""
+import os
+
 import indicator_lab as lab
 
 BENCH_SPEC = {'kind': 'bench'}
+
+# 유니버스별 벤치(= 라이브 배포판)와 체결 모델.
+#   index   : 신호 122630, 롱 122630·숏 114800 실제 ETF 시세 ×1 + 틱 슬리피지(simulate_index)
+#   samsung : 신호 005930, 005930 수익률 ×2 대칭 모델(simulate) — run_indicator_search 벤치와 동일
+#             (2026-11-13 추가: 지수에서 나온 가설이 삼성에서도 통하는지 같은 원장 형식으로 탐색)
+UNIVERSES = {
+    'index':   {'bb': (29, 1.0), 'sim': {'sl': 0.025, 'trail_gap': 0.015, 'entry_start': '09:30'},
+                'model': 'dual_etf'},
+    'samsung': {'bb': (29, 0.8), 'sim': {'sl': 0.025, 'trail_gap': 0.015, 'entry_start': '10:00'},
+                'model': 'sym2x'},
+}
+_INV_FILTERS = {'flow', 'pair_resid'}                       # 인버스 ETF 시세가 있어야 의미 있음
+_PEER_PARTS = {'peer_intraday', 'peer_rs', 'peer_agree'}    # 피어 유니버스가 있어야 의미 있음
 
 
 # ─────────────────────────────────────────
@@ -21,10 +36,14 @@ BENCH_SPEC = {'kind': 'bench'}
 # ─────────────────────────────────────────
 
 class Ctx:
-    def __init__(self, lev3, levd, inv3):
+    def __init__(self, lev3, levd, inv3=None, universe='index', peer_paths=None):
+        self.universe = universe
+        u = UNIVERSES[universe]
+        self.bench_bb, self.sim_defaults, self.model = u['bb'], dict(u['sim']), u['model']
         self.bars, self.daily = lab.load_master_data(lev3, levd)
-        self.short_lookup = lab.load_short_lookup(inv3)
-        self.long_tick, self.short_tick = lab.detect_tick(lev3), lab.detect_tick(inv3)
+        self.short_lookup = lab.load_short_lookup(inv3) if inv3 else {}
+        self.long_tick = lab.detect_tick(lev3)
+        self.short_tick = lab.detect_tick(inv3) if inv3 else None
         self.closes = [b['close'] for b in self.bars]
         self.dates = [d['date'] for d in self.daily]
         self.dcloses = [d['close'] for d in self.daily]
@@ -43,7 +62,7 @@ class Ctx:
             self.run_hi[i], self.run_lo[i] = hi, lo
         self.vwap = lab.vwap_session_series(self.bars)
         self._bb = {}
-        self.paths = {'lev3': lev3, 'levd': levd, 'inv3': inv3}
+        self.paths = {'lev3': lev3, 'levd': levd, 'inv3': inv3, 'peer': peer_paths}
         self._lazy = {}
 
     # ── 2026-10-24 추가 정보원 (지연 로드, 전부 '당일 미포함' 조회만 제공)
@@ -73,7 +92,10 @@ class Ctx:
                 if b.startswith('kosdaq_'):
                     return os.path.join(d, 'index_' + b[len('kosdaq_'):])
                 return None
-            p3, pd_ = swap(self.paths['lev3']), swap(self.paths['levd'])
+            if self.paths.get('peer'):          # 명시 피어(삼성 → 지수)
+                p3, pd_ = self.paths['peer']
+            else:
+                p3, pd_ = swap(self.paths['lev3']), swap(self.paths['levd'])
             if not (p3 and pd_ and os.path.exists(p3) and os.path.exists(pd_)):
                 self._lazy['peer'] = None
             else:
@@ -96,7 +118,7 @@ class Ctx:
             for b in self.bars:
                 lev[b['d']] = lev.get(b['d'], 0) + b['close'] * b['volume']
             inv = {}
-            with open(self.paths['inv3'], encoding='utf-8') as f:
+            with open(self.paths['inv3'] or os.devnull, encoding='utf-8') as f:
                 for r in csv.DictReader(f):
                     try:
                         d = r['datetime'][:8]
@@ -111,7 +133,8 @@ class Ctx:
             self._lazy['days'] = sorted(self.day_first)
         return self._lazy['days']
 
-    def bb(self, period=29, mult=1.0):
+    def bb(self, period=None, mult=None):
+        period, mult = _bbp(self, period, mult)
         k = (period, mult)
         if k not in self._bb:
             self._bb[k] = lab.bollinger_full_series(self.closes, period, mult)
@@ -125,6 +148,22 @@ class Ctx:
                 break
             out.append(c)
         return out
+
+
+def _bbp(ctx, period, mult):
+    """BB 파라미터 기본값 = 유니버스 벤치(지수 29/1.0, 삼성 29/0.8). 명시값은 그대로."""
+    return (period if period is not None else ctx.bench_bb[0],
+            mult if mult is not None else ctx.bench_bb[1])
+
+
+def compatible(spec: dict, ctx) -> bool:
+    """이 유니버스에서 의미 있는 가설인가 — 인버스 시세·피어가 없으면 해당 필터/게이트는 벤치와 같아져 낭비."""
+    parts = [f[0] for f in spec.get('filters') or []] + ([spec['gate'][0]] if spec.get('gate') else [])
+    if not ctx.short_lookup and any(p in _INV_FILTERS for p in parts):
+        return False
+    if any(p in _PEER_PARTS for p in parts) and not ctx.peer():
+        return False
+    return True
 
 
 def _ma(xs, n):
@@ -193,7 +232,8 @@ def gate_ma_confirm(ctx, n=5):
 # 벤치 신호 + 필터
 # ─────────────────────────────────────────
 
-def bench_signal(ctx, period=29, mult=1.0):
+def bench_signal(ctx, period=None, mult=None):
+    period, mult = _bbp(ctx, period, mult)
     return lab.build_signal_fn('bollinger', {'period': period, 'mult': mult}, ctx.bars)
 
 
@@ -332,7 +372,7 @@ def entry_tsmom(ctx, at='1400', th=0.01, use_gate=False):
     return fn
 
 
-def entry_bounce(ctx, drop=0.03, period=29, mult=1.0):
+def entry_bounce(ctx, drop=0.03, period=None, mult=None):
     """급락 반등 롱(역추세): 전일종가 대비 −drop 이상 빠진 날, 볼린저 하단 아래에서
     하단 위로 재진입하면 게이트와 무관하게 롱(반등 시도장에서 숏 대신 반등을 먹는 가설)."""
     _, _, lower = ctx.bb(period, mult)
@@ -370,13 +410,15 @@ def entry_gap(ctx, g=0.02, mode='follow'):
     return fn
 
 
-def entry_state_short(ctx, period=29, mult=1.0):
-    """(10-15 보류후보) 벤치 + 첫 판정봉에서 이미 하단 밖이면 숏(교차 없이)."""
+def entry_state_short(ctx, period=None, mult=None):
+    """(10-15 보류후보) 벤치 + 첫 판정봉에서 이미 하단 밖이면 숏(교차 없이).
+    첫 판정봉 = 유니버스 진입 시작 시각(지수 09:30, 삼성 10:00) 이후 첫 봉."""
     base = bench_signal(ctx, period, mult)
     _, _, lower = ctx.bb(period, mult)
+    es = ctx.sim_defaults['entry_start'].replace(':', '')
     first_eval = {}
     for j, b in enumerate(ctx.bars):
-        if b['t'] >= '0930' and b['d'] not in first_eval:
+        if b['t'] >= es and b['d'] not in first_eval:
             first_eval[b['d']] = j
     def fn(i, trend):
         s = base(i, trend)
@@ -517,10 +559,7 @@ def gate_peer_agree(ctx, fast=10, slow=20):
 
 def _shadow_bench(ctx):
     if 'shadow' not in ctx._lazy:
-        tr, sig, sim = gate_ma(ctx), bench_signal(ctx), {'sl': 0.025, 'trail_gap': 0.015, 'entry_start': '09:30'}
-        ctx._lazy['shadow'] = lab.simulate_index(ctx.bars, ctx.short_lookup, tr, sig, slip_ticks=0.5,
-                                                 long_tick=ctx.long_tick, short_tick=ctx.short_tick,
-                                                 **sim)['trades']
+        ctx._lazy['shadow'] = _simulate(ctx, gate_ma(ctx), bench_signal(ctx), dict(ctx.sim_defaults))
     return ctx._lazy['shadow']
 
 
@@ -652,7 +691,7 @@ def entry_orb_fail(ctx, minutes=30):
     return fn
 
 
-def filt_squeeze(ctx, pct=0.3, lb=100, recent=10, period=29, mult=1.0):
+def filt_squeeze(ctx, pct=0.3, lb=100, recent=10, period=None, mult=None):
     """변동성 압축 후 확장: 최근 recent봉 안에 BB 밴드폭이 직전 lb봉 분포의 하위 pct 이하(압축)였던 뒤의
     돌파 신호만 통과(압축→확장 구간 선별). 이전의 '저변동 게이트'(전 구간 변동성 수준)와 달리 '직전 압축' 사건 기반."""
     mid, up, lo = ctx.bb(period, mult)
@@ -858,16 +897,29 @@ def build(spec: dict, ctx: Ctx):
     sig = ENTRIES[e[0]](ctx, **(e[1] if len(e) > 1 else {})) if e else bench_signal(ctx)
     for f in spec.get('filters') or []:
         sig = with_filter(ctx, sig, FILTERS[f[0]](ctx, **(f[1] if len(f) > 1 else {})))
-    sim = {'sl': 0.025, 'trail_gap': 0.015, 'entry_start': '09:30'}
+    sim = dict(ctx.sim_defaults)
     sim.update(spec.get('sim') or {})
     return trend, sig, sim
 
 
+_SYM2X_KEYS = ('sl', 'trail_gap', 'entry_start', 'force_exit', 'cooldown_bars',
+               'time_stop_bars', 'breakeven_trigger', 'trail_activate')
+
+
+def _simulate(ctx, trend, sig, sim, leg_mode='longshort'):
+    if ctx.model == 'dual_etf':
+        return lab.simulate_index(ctx.bars, ctx.short_lookup, trend, sig,
+                                  slip_ticks=0.5, long_tick=ctx.long_tick, short_tick=ctx.short_tick,
+                                  leg_mode=leg_mode, **sim)['trades']
+    if leg_mode == 'longonly':
+        base = sig
+        sig = lambda i, t: (lambda s: s if s == 'L' else None)(base(i, t))
+    return lab.simulate(ctx.bars, trend, sig, **{k: v for k, v in sim.items() if k in _SYM2X_KEYS})['trades']
+
+
 def run_spec(spec: dict, ctx: Ctx, leg_mode='longshort'):
     trend, sig, sim = build(spec, ctx)
-    return lab.simulate_index(ctx.bars, ctx.short_lookup, trend, sig,
-                              slip_ticks=0.5, long_tick=ctx.long_tick, short_tick=ctx.short_tick,
-                              leg_mode=leg_mode, **sim)['trades']
+    return _simulate(ctx, trend, sig, sim, leg_mode)
 
 
 # ─────────────────────────────────────────

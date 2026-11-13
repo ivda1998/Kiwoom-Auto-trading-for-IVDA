@@ -7,6 +7,9 @@ run_index_search(16:20)가 데이터 갱신·벤치 채점을 끝낸 뒤 VM cron
   3) 관찰/유망 가설은 이웃 파라미터로 자식 가설 생성(최대 2세대 — 데이터마이닝 억제)
   4) 원장 저장(data/research/hypothesis_ledger.json) + 텔레그램 요약(자동배포 없음)
 실패 목록 보기: python tools/run_hypothesis_explorer.py --list
+삼성 유니버스(2026-11-13): --universe samsung — 같은 카탈로그를 삼성 벤치(BB29/0.8 10:00, 2x 대칭모델)에
+  대해 채점하고 별도 원장(hypothesis_ledger_samsung.json)에 쌓는다. 피어=지수(크로스마켓 가설용),
+  전이게이트=코스닥(동일). 인버스 시세가 필요한 가설(수급 비율·쌍 괴리)은 건너뛴다.
 데이터는 갱신하지 않는다(토큰 사용 0) — 앞선 크론이 갱신한 CSV를 읽기만 한다."""
 import argparse
 import copy
@@ -23,6 +26,8 @@ import run_indicator_search as sam
 import run_index_search as ris
 
 LEDGER_PATH = os.path.join(ris.DATA_DIR, "hypothesis_ledger.json")
+UNIVERSE = 'index'
+TITLE = {'index': '가설 탐색 에이전트', 'samsung': '가설 탐색 에이전트 (삼성)'}
 BATCH = 12                 # 1회 채점 수(텔레그램 가독성·지속 탐색 페이스)
 RETEST_DAYS = 7            # 관찰/유망 가설 재검증 주기(데이터가 쌓이면 판정이 바뀔 수 있음)
 MAX_GENERATION = 2         # 이웃 확장 최대 세대
@@ -38,8 +43,9 @@ def load_ledger() -> dict:
     if os.path.exists(LEDGER_PATH):
         with open(LEDGER_PATH, encoding='utf-8') as f:
             return json.load(f)
-    led = {'created': datetime.now().isoformat(), 'runs': 0, 'tested_total': 0, 'hypotheses': {}}
-    for hid, title, verdict, note in hl.HISTORICAL:
+    led = {'created': datetime.now().isoformat(), 'runs': 0, 'tested_total': 0, 'hypotheses': {},
+           'universe': UNIVERSE}
+    for hid, title, verdict, note in (hl.HISTORICAL if UNIVERSE == 'index' else []):
         led['hypotheses'][hid] = {'id': hid, 'family': 'historical', 'title': title, 'why': '',
                                   'status': 'historical', 'verdict_note': f'{verdict} — {note}',
                                   'generation': 0, 'history': []}
@@ -53,9 +59,11 @@ def save_ledger(led: dict):
     os.replace(tmp, LEDGER_PATH)
 
 
-def sync_catalog(led: dict) -> int:
+def sync_catalog(led: dict, ctx=None) -> int:
     added = 0
     for h in hl.catalog():
+        if ctx is not None and not hl.compatible(h['spec'], ctx):
+            continue
         if h['id'] not in led['hypotheses']:
             led['hypotheses'][h['id']] = {**h, 'status': 'queued', 'generation': 0, 'parent': None, 'history': []}
             added += 1
@@ -230,25 +238,34 @@ def main():
     ap.add_argument('--all', action='store_true', help='큐 전체를 한 번에 채점')
     ap.add_argument('--no-telegram', action='store_true')
     ap.add_argument('--data-dir', help='CSV 위치 재지정(로컬 검증용)')
+    ap.add_argument('--universe', choices=('index', 'samsung'), default='index')
     args = ap.parse_args()
 
-    global LEDGER_PATH
+    global LEDGER_PATH, UNIVERSE
+    UNIVERSE = args.universe
+    if UNIVERSE == 'samsung':
+        LEDGER_PATH = os.path.join(ris.DATA_DIR, "hypothesis_ledger_samsung.json")
     if args.data_dir:
         for k in ('CSV_LEV3', 'CSV_LEVD', 'CSV_INV3', 'LOCKED_LEV3', 'LOCKED_LEVD', 'LOCKED_INV3'):
             setattr(ris, k, os.path.join(args.data_dir, os.path.basename(getattr(ris, k))))
+        for k in ('CSV_3MIN', 'CSV_DAILY'):
+            setattr(sam, k, os.path.join(args.data_dir, os.path.basename(getattr(sam, k))))
         LEDGER_PATH = os.path.join(args.data_dir, os.path.basename(LEDGER_PATH))
 
     led = load_ledger()
     if args.list:
         print_list(led)
         return
-    added = sync_catalog(led)
-
-    ctx = hl.Ctx(ris.CSV_LEV3, ris.CSV_LEVD, ris.CSV_INV3)
+    if UNIVERSE == 'samsung':
+        ctx = hl.Ctx(sam.CSV_3MIN, sam.CSV_DAILY, None, universe='samsung',
+                     peer_paths=(ris.CSV_LEV3, ris.CSV_LEVD))
+    else:
+        ctx = hl.Ctx(ris.CSV_LEV3, ris.CSV_LEVD, ris.CSV_INV3)
+    added = sync_catalog(led, ctx)
     bench = hl.run_spec(hl.BENCH_SPEC, ctx)
     days = sorted({b['d'] for b in ctx.bars})
     data_end = ctx.bars[-1]['d']
-    print(f"[가설탐색] 데이터 ~{data_end} | 벤치 {len(bench)}건 | 카탈로그 신규 {added}건")
+    print(f"[가설탐색:{UNIVERSE}] 데이터 ~{data_end} | 벤치 {len(bench)}건 | 카탈로그 신규 {added}건")
 
     batch = pick_batch(led, 10**6 if args.all else BATCH)
     results, expanded = [], 0
@@ -284,7 +301,7 @@ def main():
     for h in led['hypotheses'].values():
         cnt[h['status']] += 1
     lines = [
-        "🧪 <b>가설 탐색 에이전트</b>",
+        f"🧪 <b>{TITLE[UNIVERSE]}</b>",
         f"데이터 ~{data_end} | 이번 {len(results)}건 · 누적 {led['tested_total']}건 | 이웃확장 +{expanded}",
         f"원장: 🌟유망 {cnt['promising']} · 👀관찰 {cnt['watch']} · ❌기각 {cnt['rejected']} · ⏳대기 {cnt['queued']}"
         f" · 📜과거기각 {cnt['historical']}",
