@@ -869,22 +869,124 @@ def entry_day_streak(ctx, n=3, mode='fade'):
 
 
 # ─────────────────────────────────────────
+# 2026-11-16 주간 패밀리 #4: 피어 선행 돌파·당일 손절/익절 후 중단·게이트 나이·연휴 캘린더·점심 휴식
+#   (오후 상태진입 재판정은 시험 결과 추가 거래 0건 — 13시에 하단 밖이면 벤치가 이미 숏 보유 중 — 이라 제외)
+# ─────────────────────────────────────────
+
+def entry_peer_lead(ctx, union=True, period=None, mult=None):
+    """피어 선행 돌파: 피어(지수↔코스닥) 레버 ETF가 같은 BB(벤치 파라미터)를 이번 봉에 돌파했는데
+    자기는 아직 밴드 안이면 게이트 방향으로 먼저 진입(시장 간 lead-lag). union=True면 벤치 신호 + 선행 진입,
+    False면 선행 진입만(독립 전략). 피어 데이터가 없으면 union은 벤치와 같고 단독은 신호 없음."""
+    base = bench_signal(ctx, period, mult) if union else (lambda i, t: None)
+    p = ctx.peer()
+    if not p:
+        return base
+    period, mult = _bbp(ctx, period, mult)
+    pdt = list(p['close_dt'])                       # 삽입순 = 시간순
+    pcl = [p['close_dt'][k] for k in pdt]
+    _, pup, plo = lab.bollinger_full_series(pcl, period, mult)
+    cross = {}
+    for k in range(1, len(pdt)):
+        if pup[k] is None or pup[k - 1] is None or pdt[k].date() != pdt[k - 1].date():
+            continue
+        if pcl[k - 1] <= pup[k - 1] and pcl[k] > pup[k]:
+            cross[pdt[k]] = 'L'
+        elif pcl[k - 1] >= plo[k - 1] and pcl[k] < plo[k]:
+            cross[pdt[k]] = 'S'
+    _, up, lo = ctx.bb(period, mult)
+    def fn(i, trend):
+        s = base(i, trend)
+        if s:
+            return s
+        c = cross.get(ctx.bars[i]['dt'])
+        if not c or up[i] is None:
+            return None
+        if c == 'L' and trend == 'UP' and ctx.closes[i] <= up[i]:
+            return 'L'
+        if c == 'S' and trend == 'DOWN' and ctx.closes[i] >= lo[i]:
+            return 'S'
+        return None
+    return fn
+
+
+def filt_day_stop(ctx, mode='loss'):
+    """당일 중단 규칙: 그날 직전 거래가 loss(손실)/win(이익)으로 끝났으면 그날 신규진입 중단.
+    signal_fn은 평탄 상태에서만 불리므로 재호출 시점엔 직전 거래가 이미 청산됨 — 결과는 진입가 대비
+    현재 신호자산 종가 방향으로 근사(룩어헤드 없음). 일중 거래 횟수 상한(무조건)과 달리 '결과 조건부'."""
+    last, stop = {}, set()
+    def keep(i, trend, s):
+        d = ctx.bars[i]['d']
+        if d in stop:
+            return False
+        if d in last:
+            dr, px = last[d]
+            r = ctx.closes[i] / px - 1
+            won = r > 0 if dr == 'L' else r < 0
+            if (mode == 'loss' and not won) or (mode == 'win' and won):
+                stop.add(d)
+                return False
+        last[d] = (s, ctx.closes[i])
+        return True
+    return keep
+
+
+def gate_age(ctx, skip=1, fast=10, slow=20):
+    """게이트 나이: MA10/20 방향이 바뀐 뒤 처음 skip 거래일은 쉬기(갓 난 크로스 = 휩쏘 전환 가능성).
+    레짐 '강화/역전중' 분해(기울기)와 다른 정보 — 방향 지속 일수 자체."""
+    base = lab.make_trend_lookup(ctx.daily, fast, slow)
+    age, prev, run = {}, None, 0
+    for d in ctx.trade_days():
+        t = base(d)
+        run = run + 1 if (t and t == prev) else 1
+        age[d], prev = run, t
+    def f(d):
+        t = base(d)
+        return t if t and age.get(d, 99) > skip else None
+    return _cached(f)
+
+
+def filt_holiday(ctx, side='post', gap=4):
+    """연휴 캘린더(휴장일은 사전 공지 → 미리 아는 정보): post=연휴(달력상 ≥gap일 공백) 직후 첫 거래일,
+    pre=연휴 직전 거래일 신규진입 금지. 연휴 리스크 회피·복귀일 갭 소화로 추세 왜곡 가설. 데이터 마지막날은 판정 안 함."""
+    from datetime import datetime
+    days = ctx.trade_days()
+    dd = [datetime.strptime(x, '%Y%m%d') for x in days]
+    flag = set()
+    for k in range(1, len(days)):
+        if (dd[k] - dd[k - 1]).days >= gap:
+            flag.add(days[k] if side == 'post' else days[k - 1])
+    def keep(i, trend, s):
+        return ctx.bars[i]['d'] not in flag
+    return keep
+
+
+def filt_lunch(ctx, start='1130', end='1300'):
+    """점심 시간대(유동성 저하·방향성 약화) 신규진입 금지 — 마감시각 컷(window)과 달리 중간 구간만 제외."""
+    def keep(i, trend, s):
+        return not (start <= ctx.bars[i]['t'] < end)
+    return keep
+
+
+# ─────────────────────────────────────────
 # 빌더: spec → (trend_lookup, signal_fn, sim_kwargs)
 # ─────────────────────────────────────────
 
 GATES = {'ma': gate_ma, 'close_ma': gate_close_ma, 'crash': gate_crash_override,
-         'confirm': gate_ma_confirm, 'peer_agree': gate_peer_agree, 'meta': gate_meta}
+         'confirm': gate_ma_confirm, 'peer_agree': gate_peer_agree, 'meta': gate_meta,
+         'age': gate_age}
 FILTERS = {'stretch': filt_stretch, 'vwap': filt_vwap, 'dayret': filt_dayret,
            'window': filt_window, 'rangepos': filt_rangepos,
            'expiry': filt_expiry, 'tom': filt_tom, 'prior_clv': filt_prior_clv, 'flow': filt_flow,
            'peer_intraday': filt_peer_intraday, 'squeeze': filt_squeeze,
            'peer_rs': filt_peer_rs, 'dow': filt_dow,
            'pair_resid': filt_pair_resid, 'range_used': filt_range_used,
-           'max_trades': filt_max_trades, 'vol_slot': filt_vol_slot}
+           'max_trades': filt_max_trades, 'vol_slot': filt_vol_slot,
+           'day_stop': filt_day_stop, 'holiday': filt_holiday, 'lunch': filt_lunch}
 ENTRIES = {'orb': entry_orb, 'pdhl': entry_pdhl, 'tsmom': entry_tsmom, 'bounce': entry_bounce,
            'gap': entry_gap, 'state_short': entry_state_short,
            'nr_break': entry_nr_break, 'bigday': entry_bigday, 'orb_fail': entry_orb_fail,
-           'inside_break': entry_inside_break, 'day_streak': entry_day_streak}
+           'inside_break': entry_inside_break, 'day_streak': entry_day_streak,
+           'peer_lead': entry_peer_lead}
 
 
 def build(spec: dict, ctx: Ctx):
@@ -1075,6 +1177,29 @@ def catalog() -> list:
         H.append(_h(f'filt_volslot_{int(k*10)}', 'filter', f'시간대 보정 거래량 {k:.1f}배 급증 동반 돌파만',
                     '같은 시각 직전 10일 평균 대비 거래량 급증 = 기관성 수급 유입 돌파(장 초반 편중 제거한 상대 거래량)',
                     {'filters': [['vol_slot', {'k': k}]]}))
+    # ── G. 2026-11-16 주간 패밀리 #4: 피어 선행 돌파·결과 조건부 당일 중단·게이트 나이·연휴·점심
+    H.append(_h('peer_lead_union', 'cross_market', '피어(코스닥) 선행 BB 돌파 시 먼저 진입 + 벤치',
+                '두 시장 중 먼저 돌파한 쪽이 다른 쪽을 끌고 감(lead-lag) — 자기 돌파 전 진입으로 추가 기회·더 좋은 진입가',
+                {'entry': ['peer_lead', {'union': True}]}))
+    H.append(_h('peer_lead_solo', 'cross_market', '피어 선행 BB 돌파 단독(게이트 방향, 자기는 밴드 안)',
+                '선행 돌파 진입만 떼어 독립 전략으로 — 벤치 신호와 겹치지 않는 시점이라 상관 낮을 가능성',
+                {'entry': ['peer_lead', {'union': False}]}, role='additive'))
+    for mode in ('loss', 'win'):
+        H.append(_h(f'meta_daystop_{mode}', 'meta',
+                    f'당일 첫 {"손실" if mode == "loss" else "이익"} 거래 후 그날 중단',
+                    '결과 조건부 당일 중단 — 손실 후 중단=휩쏘 날 차단, 이익 후 중단=추세 날 하루치 소진(거래횟수 상한과 다른 정보)',
+                    {'filters': [['day_stop', {'mode': mode}]]}))
+    for sk in (1, 2):
+        H.append(_h(f'gate_age_skip{sk}', 'regime', f'게이트 전환 후 첫 {sk}거래일 쉬기',
+                    '갓 난 MA10/20 크로스는 되돌림(휩쏘 전환) 확률이 높다 — 방향 지속 일수라는 미시험 정보',
+                    {'gate': ['age', {'skip': sk}]}))
+    for side in ('post', 'pre'):
+        H.append(_h(f'cal_holiday_{side}', 'calendar', f'연휴 {"직후 첫" if side == "post" else "직전"} 거래일 신규진입 금지',
+                    '연휴(≥4일 휴장) 전 리스크 회피 매물·연휴 후 해외 누적분 갭 소화로 일중 추세가 왜곡(휴장일=사전 공지 정보)',
+                    {'filters': [['holiday', {'side': side}]]}))
+    H.append(_h('filt_lunch_skip', 'filter', '점심(11:30~13:00) 신규진입 금지',
+                '점심 시간대 유동성 저하로 돌파가 가짜일 확률↑ — 마감시각 컷과 달리 중간 구간만 제외',
+                {'filters': [['lunch']]}))
     return H
 
 
