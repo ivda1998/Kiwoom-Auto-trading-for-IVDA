@@ -7,7 +7,13 @@ CSV·텔레그램에 남긴다. 4~8주 누적 후 그 거래들의 손익으로 
 
 VM_GUARD_MODE: off(검사 안 함) / shadow(기록만, 기본) / block(실제 보류)
 지수 프록시는 122630(코스피200 2배, 모의에서 이미 폴링 중 → 추가 호출 없음)이라
-임계값(코스피 기준)에 VM_GUARD_PROXY_LEV를 곱해 비교한다."""
+임계값(코스피 기준)에 VM_GUARD_PROXY_LEV를 곱해 비교한다.
+
+VM_TREND_GATE (2026-11-16 추가, VM_GUARD_MODE와 별개로 실제 차단): off / or / and
+  삼성전자(005930)·지수(122630) 일봉 MA10 > MA20(전일까지, 당일 미포함 — 레버리지 전략과 같은 기준)을
+  'or'=둘 중 하나, 'and'=둘 다 만족할 때만 VM 신규 매수. 보유 종목 매도는 영향 없음.
+  근거: 키움 VM 177건 재생 — AND 시 남긴 67건 +198만(건당 +0.97%) vs 빠진 110건 −83만, 차이 t 1.41.
+  일봉 조회 실패 시 통과(기존 필터와 같은 fail-open) + 경고 로그."""
 import csv
 import logging
 import os
@@ -34,10 +40,16 @@ class VMMarketGuard:
         self._stops_cache = (0.0, 0, 0)     # (ts, 당일, 직전3거래일)
         self._notified = set()              # (date, code) — 텔레그램 하루 1회
         self.log_path = os.path.join(config.DATA_DIR, "vm_guard_shadow.csv")
+        self._trend = {}                    # {"day": YYYYMMDD, "sam": bool|None, "idx": bool|None, "tried": ts}
+        self._trend_logged = set()          # (date, code, event) — 같은 차단 반복 기록 방지
 
     # ── 공개 API ─────────────────────────────────────────
     def check(self, code: str, name: str, event: str):
         """(blocked, reasons). shadow 모드는 reasons를 기록만 하고 blocked=False."""
+        tblock = self._trend_block()
+        if tblock:
+            self._record_trend(code, name, event, tblock)
+            return True, [tblock]
         mode = getattr(config, "VM_GUARD_MODE", "shadow")
         if mode == "off":
             return False, []
@@ -51,6 +63,68 @@ class VMMarketGuard:
         blocked = mode == "block"
         self._record(code, name, event, mode, blocked, reasons)
         return blocked, reasons
+
+    # ── 추세 조건 (실제 차단) ─────────────────────────────
+    def _ma_up(self, code, today):
+        """전일까지 일봉 MA10 > MA20 → True/False, 데이터 부족·실패 → None."""
+        df = self.kiwoom.get_daily_data(code, count=40)
+        if df is None or df.empty:
+            return None
+        rows = [r for r in df.to_dict("records") if str(r.get("date")) < today and r.get("close")]
+        rows.sort(key=lambda r: str(r.get("date")))
+        c = [float(r["close"]) for r in rows]
+        if len(c) < 20:
+            return None
+        return sum(c[-10:]) / 10 > sum(c[-20:]) / 20
+
+    def _trend_block(self):
+        """차단 사유 문자열 또는 None(통과)."""
+        mode = getattr(config, "VM_TREND_GATE", "off")
+        if mode not in ("or", "and"):
+            return None
+        today = datetime.now().strftime("%Y%m%d")
+        t = self._trend
+        if t.get("day") != today or ((t.get("sam") is None or t.get("idx") is None)
+                                     and time.time() - t.get("tried", 0) >= 600):
+            try:
+                sam = self._ma_up(getattr(config, "VM_TREND_SAMSUNG_CODE", "005930"), today)
+                idx = self._ma_up(getattr(config, "VM_TREND_INDEX_CODE", "122630"), today)
+            except Exception as e:
+                logger.warning(f"[VMGuard] 추세 조건 일봉 조회 실패 → 통과: {e}")
+                sam = idx = None
+            self._trend = t = {"day": today, "sam": sam, "idx": idx, "tried": time.time()}
+            lbl = lambda v: "UP" if v else ("DOWN" if v is not None else "?")
+            logger.info(f"[VMGuard] 추세 조건({mode.upper()}) 판정: 삼성 {lbl(sam)} · 지수 {lbl(idx)}")
+        sam, idx = t["sam"], t["idx"]
+        if sam is None or idx is None:
+            return None                       # 판정 불가 → 통과(fail-open)
+        ok = (sam or idx) if mode == "or" else (sam and idx)
+        if ok:
+            return None
+        return (f"추세 조건 {mode.upper()} 미충족(일봉 MA10/20: 삼성 {'UP' if sam else 'DOWN'}"
+                f" · 지수 {'UP' if idx else 'DOWN'})")
+
+    def _record_trend(self, code, name, event, reason):
+        now = datetime.now()
+        key = (now.strftime("%Y-%m-%d"), code, event)
+        if key in self._trend_logged:
+            return
+        self._trend_logged.add(key)
+        try:
+            new = not os.path.exists(self.log_path)
+            with open(self.log_path, "a", encoding="utf-8", newline="") as f:
+                w = csv.writer(f)
+                if new:
+                    w.writerow(["date", "time", "code", "name", "event", "mode", "blocked", "reasons"])
+                w.writerow([key[0], now.strftime("%H:%M:%S"), code, name, event, "trend", 1, reason])
+        except Exception as e:
+            logger.warning(f"[VMGuard] 기록 실패: {e}")
+        logger.info(f"[VMGuard] {name}({code}) {event} — {reason} → 신규 매수 보류")
+        dkey = (key[0], "trend")
+        if self.notifier and dkey not in self._notified:
+            self._notified.add(dkey)
+            self.notifier.send(f"🧭 <b>VM 신규 매수 보류</b> — {reason}\n"
+                               f"오늘 VM 지정종목은 새로 사지 않음(보유 종목 매도는 그대로). 첫 해당: {name}({code}) {event}")
 
     # ── 규칙 ─────────────────────────────────────────────
     def _reasons(self) -> list:

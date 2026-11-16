@@ -81,6 +81,10 @@ VM_GUARD_GAP         = float(_os.environ.get("VM_GUARD_GAP", "-0.015"))      # �
 VM_GUARD_INTRADAY    = float(_os.environ.get("VM_GUARD_INTRADAY", "-0.02"))  # 코스피 전일비 이하
 VM_GUARD_STOPS_TODAY = int(_os.environ.get("VM_GUARD_STOPS_TODAY", "2"))     # 당일 VM 손절 횟수 이상
 VM_GUARD_STOPS_3D    = int(_os.environ.get("VM_GUARD_STOPS_3D", "3"))        # 직전 3거래일 손절 횟수 이상
+# VM 신규 매수 추세 조건(실제 차단, VM_GUARD_MODE와 별개): off / or / and — 삼성·지수 일봉 MA10>MA20
+VM_TREND_GATE         = _os.environ.get("VM_TREND_GATE", "off").lower()
+VM_TREND_SAMSUNG_CODE = _os.environ.get("VM_TREND_SAMSUNG_CODE", "005930")
+VM_TREND_INDEX_CODE   = _os.environ.get("VM_TREND_INDEX_CODE", "122630")
 
 # 지수 레버리지 '섀도 에이전트' (skills/agent_advisor.py) — 진입 신호마다 규칙·LLM 에이전트가
 # 사이즈 배수를 매겨 data/agent_shadow.csv에 기록만 한다(주문 불변). 2026-10-25 연구 계획 4단계.
